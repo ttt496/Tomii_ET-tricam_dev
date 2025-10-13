@@ -1,0 +1,5 @@
+.venv
+.env
+.pycache
+.uv-cache
+.tmp
