@@ -3,3 +3,6 @@
 .pycache
 .uv-cache
 .tmp
+*.lock
+data/*
+recording/__pycache__/*

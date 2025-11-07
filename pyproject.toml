@@ -12,6 +12,10 @@ dependencies = [
     "pandas>=2.3.2",
     "python-dotenv>=1.0",
     "websockets>=11.0",
+    "torch==2.9.0",
+    "torchvision==0.24.0",
+    "torchaudio==2.9.0",
+    
 ]
 
 [build-system]
@@ -20,3 +24,23 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["recording"]
+
+[tool.uv.sources]
+torch = [
+  # index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  # { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

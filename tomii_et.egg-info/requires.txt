@@ -5,3 +5,6 @@ opencv-python>=4.8.0
 pandas>=2.3.2
 python-dotenv>=1.0
 websockets>=11.0
+torch==2.9.0
+torchvision==0.24.0
+torchaudio==2.9.0
