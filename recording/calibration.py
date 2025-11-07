@@ -506,10 +506,14 @@ def _setup_calibration_window(
     window_position: Optional[Tuple[int, int]],
     target_radius: int,
 ) -> "CalibrationRenderer":
+    applied_position = window_position
+    if fullscreen and applied_position is None:
+        applied_position = (0, 0)
+
     cv2.namedWindow(calibration_window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(calibration_window_name, *renderer.window_size)
-    if window_position is not None:
-        cv2.moveWindow(calibration_window_name, int(window_position[0]), int(window_position[1]))
+    if applied_position is not None:
+        cv2.moveWindow(calibration_window_name, int(applied_position[0]), int(applied_position[1]))
     if fullscreen:
         cv2.setWindowProperty(calibration_window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         try:
@@ -518,6 +522,11 @@ def _setup_calibration_window(
                 renderer = CalibrationRenderer(window_size=(w, h), radius=target_radius)
         except cv2.error:
             pass
+        if applied_position is not None:
+            try:
+                cv2.moveWindow(calibration_window_name, int(applied_position[0]), int(applied_position[1]))
+            except cv2.error:
+                pass
         blank = np.zeros((renderer.window_size[1], renderer.window_size[0], 3), dtype=np.uint8)
         cv2.imshow(calibration_window_name, blank)
         cv2.waitKey(1)
@@ -1108,6 +1117,8 @@ def record_calibration_session(
         countdown_duration=countdown_duration,
     )
     renderer = CalibrationRenderer(window_size=window_size, radius=target_radius)
+    if fullscreen and window_position is None:
+        window_position = (0, 0)
 
     chosen_extension: str
     if file_extension:
@@ -1143,6 +1154,15 @@ def record_calibration_session(
                 renderer = CalibrationRenderer(window_size=(w, h), radius=target_radius)
         except cv2.error:
             pass
+        if window_position is not None:
+            try:
+                cv2.moveWindow(
+                    calibration_window_name,
+                    int(window_position[0]),
+                    int(window_position[1]),
+                )
+            except cv2.error:
+                pass
         blank = np.zeros((renderer.window_size[1], renderer.window_size[0], 3), dtype=np.uint8)
         cv2.imshow(calibration_window_name, blank)
         cv2.waitKey(1)
@@ -1395,18 +1415,18 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--frame-height", type=int, help="Force capture height for the cameras.")
     parser.add_argument("--fps", type=float, default=30.0, help="Recording frame rate (default: 30).")
     parser.add_argument("--codec", default="MJPG", help="FourCC codec for recordings (default: MJPG).")
-    parser.add_argument("--camera-fourcc", help="Attempt to configure cameras to this FOURCC (default: MJPG).")
+    parser.add_argument("--camera-fourcc", default="MJPG", help="Attempt to configure cameras to this FOURCC (default: MJPG).")
     parser.add_argument("--preview-scale", type=float, default=1.0, help="Scale factor applied to camera preview windows when enabled.")
     parser.add_argument("--show-preview", action="store_true", help="Display camera preview windows during calibration.")
     parser.add_argument("--window-prefix", help="Custom label prefix for camera preview windows.")
-    parser.add_argument("--window-width", type=int, default=1280, help="Calibration window width when not fullscreen.")
-    parser.add_argument("--window-height", type=int, default=720, help="Calibration window height when not fullscreen.")
+    parser.add_argument("--window-width", type=int, default=1920, help="Calibration window width when not fullscreen.")
+    parser.add_argument("--window-height", type=int, default=1080, help="Calibration window height when not fullscreen.")
     parser.add_argument("--window-x", type=int, help="Optional X position for the calibration window.")
     parser.add_argument("--window-y", type=int, help="Optional Y position for the calibration window.")
     parser.add_argument("--point-duration", type=float, default=2.0, help="Seconds each calibration point is displayed (default: 2.0).")
     parser.add_argument("--pause-duration", type=float, default=0.6, help="Pause between points in seconds (default: 0.6).")
     parser.add_argument("--countdown-duration", type=float, default=1.5, help="Countdown before the first point (default: 1.5).")
-    parser.add_argument("--target-radius", type=int, default=18, help="Radius of the calibration target in pixels (default: 18).")
+    parser.add_argument("--target-radius", type=int, default=20, help="Radius of the calibration target in pixels (default: 18).")
     parser.add_argument("--windowed", action="store_true", help="Disable fullscreen mode for the calibration window.")
     parser.add_argument("--file-extension", help="Override output file extension (default: .avi when codec is MJPG, otherwise .mp4).")
     parser.add_argument("--stop-key", default="q", help="Keyboard key to stop recording early (default: q).")
