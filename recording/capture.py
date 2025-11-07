@@ -22,36 +22,60 @@ class _CameraSession:
 
 
 def list_available_cameras(max_devices: int = 10) -> List[int]:
-    """Return a list of device indices that appear to be valid webcams."""
-    found: List[int] = []
-    for device_idx in range(max_devices):
-        cap = cv2.VideoCapture(device_idx)
-        if not cap.isOpened():
-            cap.release()
-            continue
+    """Return a list of device indices that appear to be valid webcams.
 
-        success, _ = cap.read()
-        cap.release()
-        if success:
+    Windows 環境ではバックエンドによって初期化可否が変わるため、
+    DirectShow → MSMF → 自動 の順で試行して検出精度を上げる。
+    """
+    found: List[int] = []
+    api_preferences = [
+        getattr(cv2, "CAP_DSHOW", 700),  # DirectShow (定数が無いOpenCVでも数値で可)
+        getattr(cv2, "CAP_MSMF", 1400),  # Media Foundation
+        getattr(cv2, "CAP_ANY", 0),
+    ]
+    for device_idx in range(max_devices):
+        detected = False
+        for api_pref in api_preferences:
+            cap = cv2.VideoCapture(device_idx, api_pref)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            success, _ = cap.read()
+            cap.release()
+            if success:
+                detected = True
+                break
+        if detected:
             found.append(device_idx)
     return found
 
 
 def _open_camera(device_idx: int, frame_size: Optional[Tuple[int, int]]) -> cv2.VideoCapture:
-    cap = cv2.VideoCapture(device_idx)
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open camera {device_idx}")
+    """Open a camera, trying multiple API backends for robustness on Windows."""
+    api_preferences = [
+        getattr(cv2, "CAP_DSHOW", 700),
+        getattr(cv2, "CAP_MSMF", 1400),
+        getattr(cv2, "CAP_ANY", 0),
+    ]
+    last_error: Optional[str] = None
+    for api_pref in api_preferences:
+        cap = cv2.VideoCapture(device_idx, api_pref)
+        if not cap.isOpened():
+            cap.release()
+            continue
 
-    if frame_size is not None:
-        width, height = frame_size
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if frame_size is not None:
+            width, height = frame_size
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
-    success, _ = cap.read()
-    if not success:
+        success, _ = cap.read()
+        if success:
+            return cap
+        last_error = "no initial frame"
         cap.release()
-        raise RuntimeError(f"Camera {device_idx} failed to provide an initial frame")
-    return cap
+
+    raise RuntimeError(f"Failed to open camera {device_idx}: {last_error or 'unavailable'}")
 
 
 def _init_writer(output_dir: Path, device_idx: int, frame_size: Tuple[int, int], fps: float, codec: str) -> cv2.VideoWriter:
