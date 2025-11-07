@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
+import threading
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence, TextIO, Tuple
 
 import cv2
 import numpy as np
+import json
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,17 +33,31 @@ class CalibrationPoint:
     normalized_position: Tuple[float, float]
 
 
-DEFAULT_CALIBRATION_POINTS: Tuple[CalibrationPoint, ...] = (
-    CalibrationPoint("top_left", (0.2, 0.2)),
-    CalibrationPoint("top_center", (0.5, 0.2)),
-    CalibrationPoint("top_right", (0.8, 0.2)),
-    CalibrationPoint("middle_left", (0.2, 0.5)),
+
+pointset1 = (
+CalibrationPoint("top_left", (0.1, 0.1)),
+    CalibrationPoint("top_center", (0.5, 0.1)),
+    CalibrationPoint("top_right", (0.9, 0.1)),
+    CalibrationPoint("middle_left", (0.1, 0.5)),
     CalibrationPoint("middle_center", (0.5, 0.5)),
-    CalibrationPoint("middle_right", (0.8, 0.5)),
-    CalibrationPoint("bottom_left", (0.2, 0.8)),
-    CalibrationPoint("bottom_center", (0.5, 0.8)),
-    CalibrationPoint("bottom_right", (0.8, 0.8)),
+    CalibrationPoint("middle_right", (0.9, 0.5)),
+    CalibrationPoint("bottom_left", (0.1, 0.9)),
+    CalibrationPoint("bottom_center", (0.5, 0.9)),
+    CalibrationPoint("bottom_right", (0.9, 0.9)),
 )
+#pointset1の間に来るような点の集合を作成
+ponitset2 = (
+    CalibrationPoint("top_left", (0.1, 0.25)),
+    CalibrationPoint("top_center", (0.5, 0.25)),
+    CalibrationPoint("top_right", (0.9, 0.25)),
+    CalibrationPoint("middle_left", (0.1, 0.5)),
+    CalibrationPoint("middle_center", (0.5, 0.5)),
+    CalibrationPoint("middle_right", (0.9, 0.5)),
+    CalibrationPoint("bottom_left", (0.1, 0.8)),
+    CalibrationPoint("bottom_center", (0.5, 0.8)),
+    CalibrationPoint("bottom_right", (0.9, 0.8)),
+)
+DEFAULT_CALIBRATION_POINTS: Tuple[CalibrationPoint, ...] = pointset1
 
 
 @dataclass(frozen=True)
@@ -301,6 +319,18 @@ class _CalibrationSession:
     frame_point_norms: List[Optional[Tuple[float, float]]] = field(default_factory=list)
     frame_point_pixels: List[Optional[Tuple[int, int]]] = field(default_factory=list)
     active: bool = True
+    # Reader/Writer threading structures
+    write_queue: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=256))
+    capture_thread: Optional[threading.Thread] = None
+    writer_thread: Optional[threading.Thread] = None
+    # Latest frame snapshot for preview/logging (not consumed)
+    latest_frame: Optional[np.ndarray] = None
+    latest_timestamp: float = -1.0
+    latest_lock: threading.Lock = field(default_factory=threading.Lock)
+    last_logged_timestamp: float = -1.0
+    # プロファイリング用統計
+    read_stats: dict = field(default_factory=lambda: {"count": 0, "total_time": 0.0, "max_time": 0.0, "queue_full": 0})
+    write_stats: dict = field(default_factory=lambda: {"count": 0, "total_time": 0.0, "max_time": 0.0, "queue_empty": 0})
 
 
 @dataclass
@@ -330,46 +360,119 @@ def _open_camera(
     target_fps: Optional[float],
     fourcc: Optional[str],
 ) -> cv2.VideoCapture:
-    cap = cv2.VideoCapture(device_idx)
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open camera {device_idx}")
+    """Open camera robustly by trying multiple API backends on Windows.
 
-    if frame_size is not None:
-        width, height = frame_size
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+    特に Windows では MSMF/DSHOW の相性で取りこぼすことがあるため、
+    DirectShow → MSMF → AUTO の順で試行する。
+    """
+    api_preferences = [
+        getattr(cv2, "CAP_DSHOW", 700),
+        getattr(cv2, "CAP_MSMF", 1400),
+        getattr(cv2, "CAP_ANY", 0),
+    ]
 
-    if target_fps is not None and target_fps > 0:
-        cap.set(cv2.CAP_PROP_FPS, float(target_fps))
+    backend_names = {
+        getattr(cv2, "CAP_DSHOW", 700): "DSHOW",
+        getattr(cv2, "CAP_MSMF", 1400): "MSMF",
+        getattr(cv2, "CAP_ANY", 0): "AUTO",
+    }
+    last_error = None
 
-    if fourcc:
-        try:
-            code = fourcc.upper()
-            if len(code) == 4:
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*code))
-        except cv2.error:
-            pass
+    for api_pref in api_preferences:
+        backend_name = backend_names.get(api_pref, f"UNKNOWN({api_pref})")
+        # Try with FOURCC-first ordering (more reliable on Windows)
+        for ordering in ("fourcc_first", "size_first"):
+            cap = cv2.VideoCapture(device_idx, api_pref)
+            if not cap.isOpened():
+                cap.release()
+                last_error = f"{backend_name}: failed to open"
+                continue
 
-    success, _ = cap.read()
-    if not success:
-        cap.release()
-        raise RuntimeError(f"Camera {device_idx} failed to provide an initial frame")
-    return cap
+            try:
+                if ordering == "fourcc_first" and fourcc:
+                    code = fourcc.upper()
+                    if len(code) == 4:
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*code))
+
+                if frame_size is not None:
+                    width, height = frame_size
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+
+                if target_fps is not None and target_fps > 0:
+                    cap.set(cv2.CAP_PROP_FPS, float(target_fps))
+
+                if ordering == "size_first" and fourcc:
+                    code = fourcc.upper()
+                    if len(code) == 4:
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*code))
+
+                # Reduce internal buffering to minimize latency and keep real-time pace
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except cv2.error:
+                    pass
+            except cv2.error:
+                pass
+
+            # 複数フレームを読み取って安定化させる（FourCC設定の反映を待つ）
+            success = False
+            for _ in range(3):
+                frame_success, _ = cap.read()
+                if frame_success:
+                    success = True
+                    break
+            if not success:
+                cap.release()
+                last_error = f"{backend_name} ({ordering}): failed to read frame"
+                continue
+
+            # Verify actual FOURCC matches request if provided; otherwise fallback
+            if fourcc:
+                try:
+                    reported = int(cap.get(cv2.CAP_PROP_FOURCC))
+                    actual_raw = "".join(chr((reported >> (8 * i)) & 0xFF) for i in range(4))
+                    # 制御文字や非表示文字を除去してクリーンなFourCC文字列を取得
+                    actual = "".join(c for c in actual_raw if 32 <= ord(c) < 127).strip()
+                except Exception:
+                    actual = None
+                # FourCCが取得できた場合のみ検証。空文字列の場合は要求通りに設定できなかったが、
+                # カメラは動作しているので続行する
+                if actual and actual.upper() != fourcc.upper():
+                    # DSHOWバックエンドでは、FourCCが設定できなくても動作する可能性があるため、
+                    # 警告を出して続行を許可する
+                    if backend_name == "DSHOW":
+                        # DSHOWではFourCCが期待通りでなくても動作する可能性があるため、警告のみ
+                        warnings.warn(
+                            f"Camera {device_idx} ({backend_name}): FourCC mismatch "
+                            f"(got '{actual}', expected '{fourcc.upper()}'), but continuing anyway"
+                        )
+                        # DSHOWで続行
+                        return cap
+                    else:
+                        # 他のバックエンドでは厳密に検証
+                        cap.release()
+                        last_error = f"{backend_name} ({ordering}): FourCC mismatch (got '{actual}', expected '{fourcc.upper()}')"
+                        continue
+
+            return cap
+
+    error_msg = f"Failed to open camera {device_idx} on any backend"
+    if last_error:
+        error_msg += f" (last attempt: {last_error})"
+    raise RuntimeError(error_msg)
 
 
 def _init_writer(
-    output_dir: Path,
-    device_idx: int,
+    output_path: Path,
     frame_size: Tuple[int, int],
     fps: float,
     codec: str,
-    extension: str,
 ) -> cv2.VideoWriter:
     fourcc = cv2.VideoWriter_fourcc(*codec)
-    output_path = output_dir / f"camera_{device_idx}{extension}"
     writer = cv2.VideoWriter(str(output_path), fourcc, fps, frame_size)
     if not writer.isOpened():
-        raise RuntimeError(f"Failed to create video writer for camera {device_idx}")
+        raise RuntimeError(f"Failed to create video writer: {output_path}")
     return writer
 
 
@@ -394,6 +497,577 @@ def _close_session(session: _CalibrationSession) -> None:
 
     session.active = False
 
+
+def _setup_calibration_window(
+    calibration_window_name: str,
+    renderer: "CalibrationRenderer",
+    *,
+    fullscreen: bool,
+    window_position: Optional[Tuple[int, int]],
+    target_radius: int,
+) -> "CalibrationRenderer":
+    cv2.namedWindow(calibration_window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(calibration_window_name, *renderer.window_size)
+    if window_position is not None:
+        cv2.moveWindow(calibration_window_name, int(window_position[0]), int(window_position[1]))
+    if fullscreen:
+        cv2.setWindowProperty(calibration_window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        try:
+            _, _, w, h = cv2.getWindowImageRect(calibration_window_name)
+            if w > 0 and h > 0:
+                renderer = CalibrationRenderer(window_size=(w, h), radius=target_radius)
+        except cv2.error:
+            pass
+        blank = np.zeros((renderer.window_size[1], renderer.window_size[0], 3), dtype=np.uint8)
+        cv2.imshow(calibration_window_name, blank)
+        cv2.waitKey(1)
+    return renderer
+
+
+def _prepare_output_directory(output_dir: Optional[Path | str]) -> Tuple[Path, str]:
+    base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
+    session_dir_name = time.strftime("%Y%m%d-%H%M%S")
+    output_directory = base_dir / session_dir_name
+    output_directory.mkdir(parents=True, exist_ok=True)
+    return output_directory, session_dir_name
+
+
+def _choose_extension(codec: str, file_extension: Optional[str]) -> str:
+    if file_extension:
+        return file_extension if file_extension.startswith(".") else f".{file_extension}"
+    return ".avi" if codec.upper() == "MJPG" else ".mp4"
+
+
+def _open_sessions_for_cameras(
+    camera_indexes: Sequence[int],
+    *,
+    frame_size: Optional[Tuple[int, int]],
+    fps: float,
+    camera_fourcc: Optional[str],
+    codec: str,
+    output_directory: Path,
+    chosen_extension: str,
+    show_preview: bool,
+    window_prefix: str,
+    preview_scale: float,
+) -> Tuple[list[_CalibrationSession], list[_CalibrationSession], list[Path], list[dict]]:
+    sessions: list[_CalibrationSession] = []
+    all_sessions: list[_CalibrationSession] = []
+    video_paths: list[Path] = []
+    camera_meta: list[dict] = []
+
+    for idx in camera_indexes:
+        cap = _open_camera(idx, frame_size, fps, camera_fourcc)
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps_val = cap.get(cv2.CAP_PROP_FPS)
+        try:
+            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc_str = "".join([chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)])
+        except Exception:
+            fourcc_str = None
+
+        output_path = output_directory / f"camera{idx}{chosen_extension}"
+        writer = _init_writer(output_path, (actual_width, actual_height), fps, codec)
+        video_paths.append(output_path)
+
+        timestamp_path = output_directory / f"camera{idx}_timestamps.csv"
+        timestamp_handle = timestamp_path.open("w", encoding="utf-8", newline="")
+        timestamp_handle.write(
+            "frame_index,timestamp_sec,phase,point_index,point_label,norm_x,norm_y,pixel_x,pixel_y\n"
+        )
+
+        window_name: Optional[str] = None
+        if show_preview:
+            window_name = f"{window_prefix} {idx}"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            if preview_scale != 1.0:
+                cv2.resizeWindow(window_name, int(actual_width * preview_scale), int(actual_height * preview_scale))
+
+        session = _CalibrationSession(
+            idx,
+            cap,
+            writer,
+            window_name,
+            output_path,
+            timestamp_path,
+            timestamp_handle,
+        )
+        sessions.append(session)
+        all_sessions.append(session)
+
+        camera_meta.append(
+            {
+                "index": int(idx),
+                "video_path": str(output_path),
+                "timestamp_csv": str(timestamp_path),
+                "actual_width": int(actual_width),
+                "actual_height": int(actual_height),
+                "requested_fps": float(fps),
+                "driver_reported_fps": float(actual_fps_val) if actual_fps_val and actual_fps_val > 0 else None,
+                "fourcc": fourcc_str,
+            }
+        )
+
+    return sessions, all_sessions, video_paths, camera_meta
+
+
+def _write_session_meta(
+    output_directory: Path,
+    session_dir_name: str,
+    *,
+    camera_meta: list[dict],
+    renderer: "CalibrationRenderer",
+    fullscreen: bool,
+    window_position: Optional[Tuple[int, int]],
+    point_sequence: Sequence["CalibrationPoint"],
+    sequencer: "CalibrationSequencer",
+    target_radius: int,
+    codec: str,
+    camera_fourcc: Optional[str],
+    chosen_extension: str,
+) -> None:
+    try:
+        meta = {
+            "session_dir": str(output_directory),
+            "timestamp": session_dir_name,
+            "cameras": camera_meta,
+            "window": {
+                "fullscreen": bool(fullscreen),
+                "size": {"width": int(renderer.window_size[0]), "height": int(renderer.window_size[1])},
+                "position": {"x": int(window_position[0]), "y": int(window_position[1])} if window_position is not None else None,
+            },
+            "calibration": {
+                "points": [
+                    {
+                        "label": p.label,
+                        "normalized": {"x": float(p.normalized_position[0]), "y": float(p.normalized_position[1])},
+                    }
+                    for p in point_sequence
+                ],
+                "durations": {
+                    "point": float(sequencer.point_duration),
+                    "pause": float(sequencer.pause_duration),
+                    "countdown": float(sequencer.countdown_duration),
+                    "total": float(sequencer.total_duration),
+                },
+                "target_radius": int(target_radius),
+            },
+            "encoding": {
+                "codec": str(codec),
+                "camera_fourcc": str(camera_fourcc),
+                "file_extension": str(chosen_extension),
+            },
+        }
+        (output_directory / "session_meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _camera_capture_thread(session: _CalibrationSession, stop_event: threading.Event) -> None:
+    """カメラからフレームを読み取り続けるスレッド関数"""
+    read_fail_count = 0
+    # 複数カメラ時のUSB帯域競合を緩和するため、各カメラスレッドに少しオフセットを追加
+    time.sleep(session.index * 0.001)  # カメラごとに1msずつオフセット
+    
+    while not stop_event.is_set() and session.active:
+        try:
+            read_start = time.monotonic()
+            success, frame = session.capture.read()
+            read_time = time.monotonic() - read_start
+            
+            if not success:
+                read_fail_count += 1
+                if read_fail_count > 10:
+                    session.active = False
+                    break
+                time.sleep(0.01)  # 失敗時は少し待つ
+                continue
+            
+            read_fail_count = 0
+            timestamp = time.monotonic()
+            
+            # 統計を更新
+            session.read_stats["count"] += 1
+            session.read_stats["total_time"] += read_time
+            if read_time > session.read_stats["max_time"]:
+                session.read_stats["max_time"] = read_time
+            
+            # 読み取り時間が異常に長い場合は警告
+            if read_time > 0.1:
+                print(f"Warning: Camera {session.index} read took {read_time*1000:.1f}ms", file=sys.stderr)
+            
+            # 最新フレームを更新（プレビュー/ログ用）
+            with session.latest_lock:
+                session.latest_timestamp = timestamp
+                session.latest_frame = frame
+            
+            # 書き込みキューへ投入（満杯なら古いフレームを捨てる）
+            try:
+                session.write_queue.put((timestamp, frame), block=False)
+            except queue.Full:
+                session.read_stats["queue_full"] += 1
+                try:
+                    session.write_queue.get_nowait()
+                    session.write_queue.put((timestamp, frame), block=False)
+                except queue.Empty:
+                    pass
+        except Exception as e:
+            print(f"Error in camera {session.index} thread: {e}", file=sys.stderr)
+            session.active = False
+            break
+
+
+def _start_camera_threads(sessions: list[_CalibrationSession]) -> threading.Event:
+    """全カメラのキャプチャスレッドを開始"""
+    stop_event = threading.Event()
+    for session in sessions:
+        thread = threading.Thread(
+            target=_camera_capture_thread,
+            args=(session, stop_event),
+            daemon=True,
+        )
+        session.capture_thread = thread
+        thread.start()
+        # writer thread
+        def _writer_loop(sess: _CalibrationSession, stop_evt: threading.Event) -> None:
+            while not stop_evt.is_set() and sess.active:
+                try:
+                    _, frm = sess.write_queue.get(timeout=0.1)
+                except queue.Empty:
+                    sess.write_stats["queue_empty"] += 1
+                    continue
+                if sess.writer is not None:
+                    write_start = time.monotonic()
+                    sess.writer.write(frm)
+                    write_time = time.monotonic() - write_start
+                    sess.write_stats["count"] += 1
+                    sess.write_stats["total_time"] += write_time
+                    if write_time > sess.write_stats["max_time"]:
+                        sess.write_stats["max_time"] = write_time
+        wthread = threading.Thread(target=_writer_loop, args=(session, stop_event), daemon=True)
+        session.writer_thread = wthread
+        wthread.start()
+    return stop_event
+
+
+def _stop_camera_threads(sessions: list[_CalibrationSession], stop_event: threading.Event) -> None:
+    """全カメラのキャプチャスレッドを停止"""
+    stop_event.set()
+    for session in sessions:
+        if session.capture_thread is not None:
+            session.capture_thread.join(timeout=1.0)
+        if session.writer_thread is not None:
+            session.writer_thread.join(timeout=1.0)
+
+
+def _run_calibration_loop(
+    *,
+    sessions: list[_CalibrationSession],
+    all_sessions: list[_CalibrationSession],
+    renderer: "CalibrationRenderer",
+    sequencer: "CalibrationSequencer",
+    calibration_window_name: str,
+    stop_key: str,
+    show_preview: bool,
+) -> Tuple[bool, list[_PointRecord], bool]:
+    frames_captured = False
+    aborted = False
+    point_records: list[_PointRecord] = []
+    active_point_index: Optional[int] = None
+    skip_trigger = {"flag": False}
+    manual_offset = 0.0
+
+    def _mouse(event: int, x: int, y: int, flags: int, param: Optional[int]) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            skip_trigger["flag"] = True
+
+    cv2.setMouseCallback(calibration_window_name, _mouse)
+    start_time = time.monotonic()
+    
+    # カメラキャプチャスレッドを開始
+    stop_event = _start_camera_threads(sessions)
+    
+    # プロファイリング用の変数
+    profile_stats = {
+        "loop_iterations": 0,
+        "frames_processed": 0,
+        "queue_empty_count": 0,
+        "frame_write_time": [],
+        "render_time": [],
+        "waitkey_time": [],
+        "total_loop_time": [],
+    }
+    last_profile_time = start_time
+    profile_interval = 2.0  # 2秒ごとに統計を表示
+
+    try:
+        while True:
+            loop_start = time.monotonic()
+            now = time.monotonic()
+            elapsed = now - start_time
+            adjusted_elapsed = elapsed + manual_offset
+            state = sequencer.state_for_elapsed(adjusted_elapsed)
+            stage_start_real = max(0.0, elapsed - state.elapsed)
+            profile_stats["loop_iterations"] += 1
+
+            if skip_trigger["flag"] and state.phase != "finished":
+                if state.phase == "point" and active_point_index is not None and point_records:
+                    last = point_records[-1]
+                    if last.end_time is None:
+                        last.end_time = elapsed
+                active_point_index = None
+                manual_offset += max(0.0, state.remaining) + 1e-3
+                skip_trigger["flag"] = False
+                continue
+            skip_trigger["flag"] = False
+
+            if state.phase == "point" and state.point is not None:
+                if active_point_index != state.point_index:
+                    if active_point_index is not None and point_records:
+                        last = point_records[-1]
+                        if last.end_time is None:
+                            last.end_time = stage_start_real
+                    active_point_index = state.point_index
+                    norm_pos = state.point.normalized_position
+                    pixel_pos = renderer.normalized_to_pixel(norm_pos)
+                    point_records.append(
+                        _PointRecord(
+                            point_index=state.point_index,
+                            label=state.point.label,
+                            start_time=stage_start_real,
+                            normalized_position=norm_pos,
+                            pixel_position=pixel_pos,
+                        )
+                    )
+            else:
+                if active_point_index is not None and point_records:
+                    last = point_records[-1]
+                    if last.end_time is None:
+                        last.end_time = stage_start_real
+                active_point_index = None
+
+            point_idx_for_log: Optional[int] = None
+            point_label_for_log: Optional[str] = None
+            norm_for_log: Optional[Tuple[float, float]] = None
+            pixel_for_log: Optional[Tuple[int, int]] = None
+            if state.phase == "point" and state.point is not None:
+                point_idx_for_log = state.point_index
+                point_label_for_log = state.point.label
+                norm_for_log = tuple(float(v) for v in state.point.normalized_position)
+                pixel_for_log = renderer.normalized_to_pixel(state.point.normalized_position)
+
+            for session in list(sessions):
+                # カメラが停止した場合はセッションを削除
+                if not session.active:
+                    print(
+                        f"Warning: Camera {session.index} stopped delivering frames; closing stream.",
+                        file=sys.stderr,
+                    )
+                    _close_session(session)
+                    sessions.remove(session)
+                    continue
+
+                # 最新フレームのスナップショットを取得
+                with session.latest_lock:
+                    frame_timestamp = session.latest_timestamp
+                    frame = session.latest_frame
+
+                if frame is None or frame_timestamp <= 0:
+                    profile_stats["queue_empty_count"] += 1
+                    continue
+
+                # 同一フレームの重複ログを防ぐ
+                if frame_timestamp <= session.last_logged_timestamp:
+                    continue
+                session.last_logged_timestamp = frame_timestamp
+
+                frames_captured = True
+                profile_stats["frames_processed"] += 1
+                ts = frame_timestamp - start_time
+                session.frame_times.append(ts)
+                session.frame_point_indices.append(point_idx_for_log)
+                session.frame_point_labels.append(point_label_for_log)
+                session.frame_point_norms.append(norm_for_log)
+                session.frame_point_pixels.append(pixel_for_log)
+
+                if session.timestamp_handle is not None:
+                    idx_value = "" if point_idx_for_log is None else str(point_idx_for_log)
+                    label_value = "" if point_label_for_log is None else point_label_for_log
+                    if norm_for_log is not None:
+                        nx, ny = norm_for_log
+                        nx_s, ny_s = f"{nx:.6f}", f"{ny:.6f}"
+                        if pixel_for_log is not None:
+                            px, py = pixel_for_log
+                            px_s, py_s = str(int(px)), str(int(py))
+                        else:
+                            px_s = py_s = ""
+                    else:
+                        nx_s = ny_s = px_s = py_s = ""
+                    session.timestamp_handle.write(
+                        f"{session.frame_index},{ts:.6f},{state.phase},{idx_value},{label_value},{nx_s},{ny_s},{px_s},{py_s}\n"
+                    )
+                session.frame_index += 1
+
+                # 書き込みは writer スレッドに任せる
+
+                if show_preview and session.window_name is not None:
+                    cv2.imshow(session.window_name, frame)
+
+            if not sessions:
+                raise RuntimeError("All cameras stopped delivering frames.")
+
+            render_start = time.monotonic()
+            frame_ui = renderer.render(state)
+            cv2.imshow(calibration_window_name, frame_ui)
+            profile_stats["render_time"].append(time.monotonic() - render_start)
+            
+            waitkey_start = time.monotonic()
+            key = cv2.waitKey(1) & 0xFF
+            profile_stats["waitkey_time"].append(time.monotonic() - waitkey_start)
+            
+            profile_stats["total_loop_time"].append(time.monotonic() - loop_start)
+            
+            # 定期的に統計情報を表示
+            current_time = time.monotonic()
+            if current_time - last_profile_time >= profile_interval:
+                elapsed_profiling = current_time - last_profile_time
+                loop_rate = profile_stats["loop_iterations"] / elapsed_profiling
+                frame_rate = profile_stats["frames_processed"] / elapsed_profiling
+                queue_empty_rate = profile_stats["queue_empty_count"] / profile_stats["loop_iterations"] * 100 if profile_stats["loop_iterations"] > 0 else 0
+                
+                print(f"\n[プロファイリング統計] (過去{elapsed_profiling:.1f}秒)", file=sys.stderr)
+                print(f"  ループ回数: {profile_stats['loop_iterations']} ({loop_rate:.1f} loops/sec)", file=sys.stderr)
+                print(f"  フレーム処理数: {profile_stats['frames_processed']} ({frame_rate:.2f} fps)", file=sys.stderr)
+                print(f"  キュー空の回数: {profile_stats['queue_empty_count']} ({queue_empty_rate:.1f}%)", file=sys.stderr)
+                
+                # 各カメラごとの詳細統計
+                for session in all_sessions:
+                    if session.read_stats["count"] > 0:
+                        read_count = session.read_stats["count"]
+                        read_avg = (session.read_stats["total_time"] / read_count) * 1000
+                        read_max = session.read_stats["max_time"] * 1000
+                        read_fps = read_count / elapsed_profiling
+                        queue_full = session.read_stats["queue_full"]
+                        queue_full_rate = (queue_full / read_count * 100) if read_count > 0 else 0
+                        
+                        write_count = session.write_stats["count"]
+                        write_avg = (session.write_stats["total_time"] / write_count * 1000) if write_count > 0 else 0
+                        write_max = session.write_stats["max_time"] * 1000
+                        write_queue_empty = session.write_stats["queue_empty"]
+                        
+                        print(f"  Camera {session.index}:", file=sys.stderr)
+                        print(f"    読み取り: {read_count}回 ({read_fps:.2f} fps), avg={read_avg:.2f}ms, max={read_max:.2f}ms, キュー満杯={queue_full}回 ({queue_full_rate:.1f}%)", file=sys.stderr)
+                        print(f"    書き込み: {write_count}回, avg={write_avg:.2f}ms, max={write_max:.2f}ms, キュー空={write_queue_empty}回", file=sys.stderr)
+                
+                if profile_stats["frame_write_time"]:
+                    avg_write = sum(profile_stats["frame_write_time"]) / len(profile_stats["frame_write_time"]) * 1000
+                    max_write = max(profile_stats["frame_write_time"]) * 1000
+                    print(f"  フレーム書き込み: avg={avg_write:.2f}ms, max={max_write:.2f}ms", file=sys.stderr)
+                
+                if profile_stats["render_time"]:
+                    avg_render = sum(profile_stats["render_time"]) / len(profile_stats["render_time"]) * 1000
+                    max_render = max(profile_stats["render_time"]) * 1000
+                    print(f"  レンダリング: avg={avg_render:.2f}ms, max={max_render:.2f}ms", file=sys.stderr)
+                
+                if profile_stats["waitkey_time"]:
+                    avg_waitkey = sum(profile_stats["waitkey_time"]) / len(profile_stats["waitkey_time"]) * 1000
+                    print(f"  waitKey: avg={avg_waitkey:.2f}ms", file=sys.stderr)
+                
+                if profile_stats["total_loop_time"]:
+                    avg_loop = sum(profile_stats["total_loop_time"]) / len(profile_stats["total_loop_time"]) * 1000
+                    max_loop = max(profile_stats["total_loop_time"]) * 1000
+                    print(f"  ループ全体: avg={avg_loop:.2f}ms, max={max_loop:.2f}ms", file=sys.stderr)
+                
+                # 統計をリセット
+                for key in profile_stats:
+                    if isinstance(profile_stats[key], list):
+                        profile_stats[key] = []
+                    else:
+                        profile_stats[key] = 0
+                # カメラ統計もリセット
+                for session in all_sessions:
+                    session.read_stats = {"count": 0, "total_time": 0.0, "max_time": 0.0, "queue_full": 0}
+                    session.write_stats = {"count": 0, "total_time": 0.0, "max_time": 0.0, "queue_empty": 0}
+                last_profile_time = current_time
+
+            if key == ord(stop_key) or key == 27:
+                aborted = True
+                break
+
+            if key in (ord(" "), ord("\r"), ord("\n")):
+                skip_trigger["flag"] = True
+                continue
+
+            if state.phase == "finished":
+                break
+
+    finally:
+        _stop_camera_threads(sessions, stop_event)
+
+    final_elapsed = time.monotonic() - start_time
+    if point_records and point_records[-1].end_time is None:
+        point_records[-1].end_time = final_elapsed
+    return frames_captured, point_records, aborted
+
+
+def _finalize_and_collect_results(
+    *,
+    calibration_window_name: str,
+    all_sessions: list[_CalibrationSession],
+    video_paths: list[Path],
+    point_records: list[_PointRecord],
+    frames_captured: bool,
+    aborted: bool,
+    start_time: float,
+) -> "CalibrationRecordingResult":
+    for session in all_sessions:
+        _close_session(session)
+    cv2.destroyWindow(calibration_window_name)
+    cv2.waitKey(1)
+
+    if not frames_captured:
+        raise RuntimeError("No frames captured during calibration session.")
+
+    final_elapsed = time.monotonic() - start_time
+    events: list[CalibrationEvent] = []
+    for rec in point_records:
+        st = float(rec.start_time)
+        et = float(rec.end_time) if rec.end_time is not None else final_elapsed
+        events.append(
+            CalibrationEvent(
+                point_index=int(rec.point_index),
+                label=str(rec.label),
+                start_time=st,
+                end_time=et,
+                normalized_position=tuple(float(v) for v in rec.normalized_position),
+                pixel_position=tuple(int(v) for v in rec.pixel_position),
+            )
+        )
+
+    frame_logs: list[CameraFrameLog] = []
+    for session in all_sessions:
+        frame_logs.append(
+            CameraFrameLog(
+                camera_index=session.index,
+                timestamps=tuple(session.frame_times),
+                point_indices=tuple(session.frame_point_indices),
+                point_labels=tuple(session.frame_point_labels),
+                normalized_positions=tuple(session.frame_point_norms),
+                pixel_positions=tuple(session.frame_point_pixels),
+                csv_path=session.timestamp_path,
+            )
+        )
+
+    return CalibrationRecordingResult(
+        video_paths=tuple(video_paths),
+        events=tuple(events),
+        frame_logs=tuple(frame_logs),
+        aborted=aborted,
+        duration=final_elapsed,
+    )
 
 def record_calibration_session(
     camera_indexes: Sequence[int],
@@ -481,14 +1155,16 @@ def record_calibration_session(
 
     cv2.setMouseCallback(calibration_window_name, _calibration_mouse_handler)
 
-    output_directory: Optional[Path] = None
-    if output_dir is not None:
-        output_directory = Path(output_dir).expanduser().resolve()
-        output_directory.mkdir(parents=True, exist_ok=True)
+    # Prepare default output directory and session timestamp tag
+    base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
+    session_dir_name = time.strftime("%Y%m%d-%H%M%S")  # YYYYMMDD-HHMMSS
+    output_directory = base_dir / session_dir_name
+    output_directory.mkdir(parents=True, exist_ok=True)
 
     sessions: List[_CalibrationSession] = []
     all_sessions: List[_CalibrationSession] = []
     video_paths: List[Path] = []
+    camera_meta: List[dict] = []
 
     try:
         for idx in camera_indexes:
@@ -496,20 +1172,28 @@ def record_calibration_session(
 
             actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps_val = cap.get(cv2.CAP_PROP_FPS)
+            # Choose writer FPS: prefer driver-reported if sane, else requested fps
+            writer_fps = float(actual_fps_val) if actual_fps_val and actual_fps_val > 0.1 and actual_fps_val < 240 else float(fps)
+            try:
+                fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+                fourcc_str = "".join([chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)])
+            except Exception:
+                fourcc_str = None
             writer: Optional[cv2.VideoWriter] = None
             output_path: Optional[Path] = None
             timestamp_path: Optional[Path] = None
             timestamp_handle: Optional[TextIO] = None
-            if output_directory is not None:
-                writer = _init_writer(output_directory, idx, (actual_width, actual_height), fps, codec, chosen_extension)
-                output_path = output_directory / f"camera_{idx}{chosen_extension}"
-                video_paths.append(output_path)
+            # Always write outputs into data/YYMMDD-HHMMSS, name camera{n}.*
+            output_path = output_directory / f"camera{idx}{chosen_extension}"
+            writer = _init_writer(output_path, (actual_width, actual_height), writer_fps, codec)
+            video_paths.append(output_path)
 
-                timestamp_path = output_directory / f"camera_{idx}_timestamps.csv"
-                timestamp_handle = timestamp_path.open("w", encoding="utf-8", newline="")
-                timestamp_handle.write(
-                    "frame_index,timestamp_sec,phase,point_index,point_label,norm_x,norm_y,pixel_x,pixel_y\n"
-                )
+            timestamp_path = output_directory / f"camera{idx}_timestamps.csv"
+            timestamp_handle = timestamp_path.open("w", encoding="utf-8", newline="")
+            timestamp_handle.write(
+                "frame_index,timestamp_sec,phase,point_index,point_label,norm_x,norm_y,pixel_x,pixel_y\n"
+            )
 
             window_name: Optional[str] = None
             if show_preview:
@@ -533,6 +1217,20 @@ def record_calibration_session(
             )
             sessions.append(session)
             all_sessions.append(session)
+
+            camera_meta.append(
+                {
+                    "index": int(idx),
+                    "video_path": str(output_path),
+                    "timestamp_csv": str(timestamp_path),
+                    "actual_width": int(actual_width),
+                    "actual_height": int(actual_height),
+                    "requested_fps": float(fps),
+                    "driver_reported_fps": float(actual_fps_val) if actual_fps_val and actual_fps_val > 0 else None,
+                    "writer_fps": float(writer_fps),
+                    "fourcc": fourcc_str,
+                }
+            )
 
     except Exception:
         for session in all_sessions:
@@ -563,147 +1261,60 @@ def record_calibration_session(
         except Exception as exc:  # safety catch
             print(f"Warning: unexpected alignment UI error: {exc}", file=sys.stderr)
 
-    frames_captured = False
-    aborted = False
-    point_records: List[_PointRecord] = []
-    active_point_index: Optional[int] = None
-    start_time = time.monotonic()
-    manual_offset = 0.0
-
+    # Write session-level metadata for reproducibility
     try:
-        while True:
-            now = time.monotonic()
-            elapsed = now - start_time
-            adjusted_elapsed = elapsed + manual_offset
-            state = sequencer.state_for_elapsed(adjusted_elapsed)
-            stage_start_real = max(0.0, elapsed - state.elapsed)
+        meta = {
+            "session_dir": str(output_directory),
+            "timestamp": session_dir_name,
+            "cameras": camera_meta,
+            "window": {
+                "fullscreen": bool(fullscreen),
+                "size": {"width": int(renderer.window_size[0]), "height": int(renderer.window_size[1])},
+                "position": {"x": int(window_position[0]), "y": int(window_position[1])} if window_position is not None else None,
+            },
+            "calibration": {
+                "points": [
+                    {
+                        "label": p.label,
+                        "normalized": {"x": float(p.normalized_position[0]), "y": float(p.normalized_position[1])},
+                    }
+                    for p in point_sequence
+                ],
+                "durations": {
+                    "point": float(point_duration),
+                    "pause": float(pause_duration),
+                    "countdown": float(countdown_duration),
+                    "total": float(sequencer.total_duration),
+                },
+                "target_radius": int(target_radius),
+            },
+            "encoding": {
+                "codec": str(codec),
+                "camera_fourcc": str(camera_fourcc),
+                "file_extension": str(chosen_extension),
+            },
+        }
+        (output_directory / "session_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
-            if skip_trigger["flag"] and state.phase != "finished":
-                if state.phase == "point" and active_point_index is not None and point_records:
-                    last = point_records[-1]
-                    if last.end_time is None:
-                        last.end_time = elapsed
-                active_point_index = None
-                manual_offset += max(0.0, state.remaining) + 1e-3
-                skip_trigger["flag"] = False
-                continue
-            skip_trigger["flag"] = False
-
-            if state.phase == "point" and state.point is not None:
-                if active_point_index != state.point_index:
-                    if active_point_index is not None and point_records:
-                        last = point_records[-1]
-                        if last.end_time is None:
-                            last.end_time = stage_start_real
-                    active_point_index = state.point_index
-                    normalized_position = state.point.normalized_position
-                    pixel_position = renderer.normalized_to_pixel(normalized_position)
-                    point_records.append(
-                        _PointRecord(
-                            point_index=state.point_index,
-                            label=state.point.label,
-                            start_time=stage_start_real,
-                            normalized_position=normalized_position,
-                            pixel_position=pixel_position,
-                        )
-                    )
-            else:
-                if active_point_index is not None and point_records:
-                    last = point_records[-1]
-                    if last.end_time is None:
-                        last.end_time = stage_start_real
-                active_point_index = None
-
-            point_idx_for_log: Optional[int]
-            point_label_for_log: Optional[str]
-            norm_for_log: Optional[Tuple[float, float]]
-            pixel_for_log: Optional[Tuple[int, int]]
-            if state.phase == "point" and state.point is not None:
-                point_idx_for_log = state.point_index
-                point_label_for_log = state.point.label
-                norm_for_log = tuple(float(v) for v in state.point.normalized_position)
-                pixel_for_log = renderer.normalized_to_pixel(state.point.normalized_position)
-            else:
-                point_idx_for_log = None
-                point_label_for_log = None
-                norm_for_log = None
-                pixel_for_log = None
-
-            for session in list(sessions):
-                success, frame = session.capture.read()
-                if not success:
-                    print(
-                        f"Warning: Camera {session.index} stopped delivering frames; closing stream.",
-                        file=sys.stderr,
-                    )
-                    _close_session(session)
-                    sessions.remove(session)
-                    continue
-
-                frames_captured = True
-
-                frame_timestamp = time.monotonic() - start_time
-                session.frame_times.append(frame_timestamp)
-                session.frame_point_indices.append(point_idx_for_log)
-                session.frame_point_labels.append(point_label_for_log)
-                session.frame_point_norms.append(norm_for_log)
-                session.frame_point_pixels.append(pixel_for_log)
-
-                frame_index = session.frame_index
-                session.frame_index += 1
-
-                if session.timestamp_handle is not None:
-                    phase_value = state.phase
-                    idx_value = "" if point_idx_for_log is None else str(point_idx_for_log)
-                    label_value = "" if point_label_for_log is None else point_label_for_log
-                    if norm_for_log is not None:
-                        norm_x, norm_y = norm_for_log
-                        norm_x_str = f"{norm_x:.6f}"
-                        norm_y_str = f"{norm_y:.6f}"
-                        if pixel_for_log is not None:
-                            pixel_x, pixel_y = pixel_for_log
-                            pixel_x_str = str(int(pixel_x))
-                            pixel_y_str = str(int(pixel_y))
-                        else:
-                            pixel_x_str = pixel_y_str = ""
-                    else:
-                        norm_x_str = norm_y_str = ""
-                        pixel_x_str = pixel_y_str = ""
-                    session.timestamp_handle.write(
-                        f"{frame_index},{frame_timestamp:.6f},{phase_value},{idx_value},{label_value},{norm_x_str},{norm_y_str},{pixel_x_str},{pixel_y_str}\n"
-                    )
-
-                if session.writer is not None:
-                    session.writer.write(frame)
-
-                if show_preview and session.window_name is not None:
-                    cv2.imshow(session.window_name, frame)
-
-            if not sessions:
-                raise RuntimeError("All cameras stopped delivering frames.")
-
-            calibration_frame = renderer.render(state)
-            cv2.imshow(calibration_window_name, calibration_frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord(stop_key) or key == 27:
-                aborted = True
-                break
-
-            if key in (ord(" "), ord("\r"), ord("\n")):
-                skip_trigger["flag"] = True
-                continue
-
-            if state.phase == "finished":
-                break
-
+    start_time = time.monotonic()
+    try:
+        frames_captured, point_records, aborted = _run_calibration_loop(
+            sessions=sessions,
+            all_sessions=all_sessions,
+            renderer=renderer,
+            sequencer=sequencer,
+            calibration_window_name=calibration_window_name,
+            stop_key=stop_key,
+            show_preview=show_preview,
+        )
     except KeyboardInterrupt:
         aborted = True
+        frames_captured = False
+        point_records = []
     finally:
-        for session in all_sessions:
-            _close_session(session)
-        cv2.destroyWindow(calibration_window_name)
-        cv2.waitKey(1)
+        pass  # _run_calibration_loop内でクリーンアップ済み
 
     final_elapsed = time.monotonic() - start_time
     if point_records and point_records[-1].end_time is None:
@@ -896,11 +1507,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             location = str(log.csv_path) if log.csv_path is not None else "(not written)"
             frames = len(log.timestamps)
             if frames > 1:
-                duration = log.timestamps[-1] - log.timestamps[0]
-                observed_fps = (frames - 1) / duration if duration > 0 else None
+                # フレーム間隔の平均を計算してFPSを求める（より正確）
+                intervals = []
+                for i in range(1, len(log.timestamps)):
+                    interval = log.timestamps[i] - log.timestamps[i - 1]
+                    if interval > 0:  # 0以下の間隔は無視
+                        intervals.append(interval)
+                
+                if intervals:
+                    avg_interval = sum(intervals) / len(intervals)
+                    observed_fps = 1.0 / avg_interval if avg_interval > 0 else None
+                else:
+                    # 間隔が計算できない場合は総時間から計算
+                    total_duration = log.timestamps[-1] - log.timestamps[0]
+                    observed_fps = (frames - 1) / total_duration if total_duration > 0 else None
+            elif frames == 1:
+                # フレームが1つだけの場合はFPS計算不可
+                observed_fps = None
             else:
                 observed_fps = None
-            fps_display = f"{observed_fps:.2f} fps" if observed_fps else "fps unknown"
+            
+            if observed_fps is not None:
+                # 総時間も表示
+                total_duration = log.timestamps[-1] - log.timestamps[0] if frames > 1 else 0.0
+                fps_display = f"{observed_fps:.2f} fps (total: {total_duration:.2f}s)"
+            else:
+                fps_display = "fps unknown"
             print(
                 f" - camera {log.camera_index}: {frames} frames captured ({fps_display}), timestamps -> {location}"
             )
