@@ -19,3 +19,5 @@ Requires-Dist: torch==2.9.0; sys_platform == "linux"
 Requires-Dist: torchvision==0.24.0; sys_platform == "linux"
 Requires-Dist: torchaudio==2.9.0; sys_platform == "linux"
 Requires-Dist: pydantic>=2.12.4
+Requires-Dist: pygame>=2.6.1
+Requires-Dist: dotenv>=0.9.9
