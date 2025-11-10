@@ -12,7 +12,6 @@ dependencies = [
     "pandas>=2.3.2",
     "python-dotenv>=1.0",
     "websockets>=11.0",
-    "araya-eye",
     "torch==2.2.2 ; sys_platform != 'linux'",
     "torchvision==0.17.2 ; sys_platform != 'linux'",
     "torchaudio==2.2.2 ; sys_platform != 'linux'",
@@ -33,9 +32,6 @@ build-backend = "setuptools.build_meta"
 include = ["recording"]
 
 [tool.uv.sources]
-araya-eye = [
-  { path = "araya_eye", editable = true },
-]
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },

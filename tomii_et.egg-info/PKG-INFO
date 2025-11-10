@@ -11,7 +11,6 @@ Requires-Dist: opencv-python>=4.8.0
 Requires-Dist: pandas>=2.3.2
 Requires-Dist: python-dotenv>=1.0
 Requires-Dist: websockets>=11.0
-Requires-Dist: araya-eye
 Requires-Dist: torch==2.2.2; sys_platform != "linux"
 Requires-Dist: torchvision==0.17.2; sys_platform != "linux"
 Requires-Dist: torchaudio==2.2.2; sys_platform != "linux"
