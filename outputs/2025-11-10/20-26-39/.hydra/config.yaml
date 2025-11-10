@@ -1,0 +1,56 @@
+seed: 42
+data:
+  base_dir: data
+  n_cams: 3
+  camera_ids:
+  - 0
+  - 1
+  - 2
+  frame_width: 1920
+  frame_height: 1080
+  val_ratio: 0.15
+  test_ratio: 0.15
+  train_sessions:
+  - 20251108/022652
+  - 20251108/023219
+  val_sessions:
+  - 20251108/023406
+  test_sessions:
+  - 20251108/023947
+  image_format: npy
+  split_group: session
+  allowed_phases:
+  - point
+training:
+  batch_size: 16
+  num_workers: 4
+  max_epochs: 20
+  grad_clip: 1.0
+optimizer:
+  name: radamschedulefree
+  lr: 0.0001
+  weight_decay: 0.0001
+scheduler:
+  type: reduce_on_plateau
+  patience: 3
+  factor: 0.5
+model:
+  n_cams: 3
+  eyes_per_cam: 2
+  in_ch: 1
+  patch_h: 40
+  patch_w: 140
+  eye_feat_dim: 96
+  geo_hidden: 192
+  fusion_hidden: 128
+  dropout: 0.1
+  aux_weight: 0.1
+  screen_wh: null
+loss:
+  main: mse
+  aux_weight: 0.1
+  huber_delta: 2.0
+wandb:
+  project: tri-cam
+  run_name: ''
+  mode: disabled

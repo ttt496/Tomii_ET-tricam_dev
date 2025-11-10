@@ -9,6 +9,7 @@ araya-eye
 pydantic>=2.12.4
 pygame>=2.6.1
 dotenv>=0.9.9
+wandb>=0.22.3
 
 [:sys_platform != "linux"]
 torch==2.2.2

@@ -21,3 +21,4 @@ Requires-Dist: torchaudio==2.9.0; sys_platform == "linux"
 Requires-Dist: pydantic>=2.12.4
 Requires-Dist: pygame>=2.6.1
 Requires-Dist: dotenv>=0.9.9
+Requires-Dist: wandb>=0.22.3
