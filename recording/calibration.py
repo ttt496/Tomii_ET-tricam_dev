@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import queue
 import random
 import sys
@@ -15,7 +17,7 @@ from typing import List, Literal, Optional, Sequence, TextIO, Tuple
 
 import cv2
 import numpy as np
-import json
+import pygame
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -240,6 +242,10 @@ class CalibrationRenderer:
     def window_size(self) -> Tuple[int, int]:
         return self._width, self._height
 
+    @property
+    def background_color(self) -> Tuple[int, int, int]:
+        return self._background_color
+
     def normalized_to_pixel(self, position: Tuple[float, float]) -> Tuple[int, int]:
         x_norm, y_norm = position
         x = int(round(x_norm * (self._width - 1)))
@@ -301,6 +307,78 @@ class CalibrationRenderer:
             self._target_color,
             -1,
         )
+
+    def clone_with_window_size(self, window_size: Tuple[int, int]) -> "CalibrationRenderer":
+        return CalibrationRenderer(
+            window_size=window_size,
+            background_color=self._background_color,
+            target_color=self._target_color,
+            pause_color=self._pause_color,
+            text_color=self._text_color,
+            radius=self._radius,
+            thickness=self._thickness,
+            font_scale=self._font_scale,
+        )
+
+
+def _bgr_to_rgb(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    return (color[2], color[1], color[0])
+
+
+def _setup_calibration_display(
+    *,
+    calibration_window_name: str,
+    renderer: CalibrationRenderer,
+    fullscreen: bool,
+    window_position: Optional[Tuple[int, int]],
+) -> Tuple[pygame.Surface, CalibrationRenderer]:
+    if not pygame.get_init():
+        pygame.init()
+
+    if window_position is not None and not fullscreen:
+        os.environ["SDL_VIDEO_WINDOW_POS"] = f"{int(window_position[0])},{int(window_position[1])}"
+    flags = pygame.FULLSCREEN if fullscreen else pygame.SHOWN | pygame.RESIZABLE
+    screen = pygame.display.set_mode(renderer.window_size, flags)
+    pygame.display.set_caption(calibration_window_name)
+
+    actual_size = screen.get_size()
+    if actual_size != renderer.window_size:
+        renderer = renderer.clone_with_window_size(actual_size)
+
+    screen.fill(_bgr_to_rgb(renderer.background_color))
+    pygame.display.flip()
+    return screen, renderer
+
+
+def _teardown_calibration_display() -> None:
+    if pygame.get_init():
+        pygame.display.quit()
+        pygame.quit()
+
+
+def _blit_frame_to_screen(screen: pygame.Surface, frame: np.ndarray) -> None:
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    surface = pygame.image.frombuffer(rgb_frame.tobytes(), (frame.shape[1], frame.shape[0]), "RGB")
+    screen.blit(surface, (0, 0))
+    pygame.display.flip()
+
+
+def _poll_pygame_events(stop_key_code: Optional[int]) -> Tuple[bool, bool]:
+    skip_requested = False
+    abort_requested = False
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            abort_requested = True
+        elif event.type == pygame.KEYDOWN:
+            if stop_key_code is not None and event.key == stop_key_code:
+                abort_requested = True
+            elif event.key == pygame.K_ESCAPE:
+                abort_requested = True
+            elif event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+                skip_requested = True
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            skip_requested = True
+    return skip_requested, abort_requested
 
 
 @dataclass(frozen=True)
@@ -521,38 +599,12 @@ def _close_session(session: _CalibrationSession) -> None:
     session.active = False
 
 
-def _setup_calibration_window(
-    calibration_window_name: str,
-    renderer: "CalibrationRenderer",
-    *,
-    fullscreen: bool,
-    window_position: Optional[Tuple[int, int]],
-    target_radius: int,
-) -> "CalibrationRenderer":
-    cv2.namedWindow(calibration_window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(calibration_window_name, *renderer.window_size)
-    if window_position is not None:
-        cv2.moveWindow(calibration_window_name, int(window_position[0]), int(window_position[1]))
-    if fullscreen:
-        cv2.setWindowProperty(calibration_window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        try:
-            _, _, w, h = cv2.getWindowImageRect(calibration_window_name)
-            if w > 0 and h > 0:
-                renderer = CalibrationRenderer(window_size=(w, h), radius=target_radius)
-        except cv2.error:
-            pass
-        blank = np.zeros((renderer.window_size[1], renderer.window_size[0], 3), dtype=np.uint8)
-        cv2.imshow(calibration_window_name, blank)
-        cv2.waitKey(1)
-    return renderer
-
-
 def _prepare_output_directory(output_dir: Optional[Path | str]) -> Tuple[Path, str]:
     base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
-    date_str = time.strftime("%Y%m%d")
-    time_str = time.strftime("%H%M%S")
-    session_dir_name = f"{date_str}/{time_str}"
-    output_directory = base_dir / date_str / time_str
+    date_component = time.strftime("%Y%m%d")
+    time_component = time.strftime("%H%M%S")
+    session_dir_name = f"{date_component}/{time_component}"
+    output_directory = base_dir / date_component / time_component
     output_directory.mkdir(parents=True, exist_ok=True)
     return output_directory, session_dir_name
 
@@ -794,7 +846,7 @@ def _run_calibration_loop(
     all_sessions: list[_CalibrationSession],
     renderer: "CalibrationRenderer",
     sequencer: "CalibrationSequencer",
-    calibration_window_name: str,
+    screen: pygame.Surface,
     stop_key: str,
     show_preview: bool,
     fps: float = 30.0,
@@ -805,12 +857,15 @@ def _run_calibration_loop(
     active_point_index: Optional[int] = None
     skip_trigger = {"flag": False}
     manual_offset = 0.0
+    clock = pygame.time.Clock()
+    stop_key_code: Optional[int] = None
+    for candidate in (stop_key, stop_key.lower(), stop_key.upper()):
+        try:
+            stop_key_code = pygame.key.key_code(candidate)
+            break
+        except (ValueError, AttributeError):
+            continue
 
-    def _mouse(event: int, x: int, y: int, flags: int, param: Optional[int]) -> None:
-        if event == cv2.EVENT_LBUTTONDOWN:
-            skip_trigger["flag"] = True
-
-    cv2.setMouseCallback(calibration_window_name, _mouse)
     start_time = time.monotonic()
     
     # カメラキャプチャスレッドを開始
@@ -828,7 +883,6 @@ def _run_calibration_loop(
         "queue_empty_count": 0,
         "frame_write_time": [],
         "render_time": [],
-        "waitkey_time": [],
         "total_loop_time": [],
     }
     last_profile_time = start_time
@@ -843,6 +897,13 @@ def _run_calibration_loop(
             state = sequencer.state_for_elapsed(adjusted_elapsed)
             stage_start_real = max(0.0, elapsed - state.elapsed)
             profile_stats["loop_iterations"] += 1
+
+            skip_from_input, abort_from_input = _poll_pygame_events(stop_key_code)
+            if abort_from_input:
+                aborted = True
+                break
+            if skip_from_input:
+                skip_trigger["flag"] = True
 
             if skip_trigger["flag"] and state.phase != "finished":
                 if state.phase == "point" and active_point_index is not None and point_records:
@@ -952,21 +1013,11 @@ def _run_calibration_loop(
 
             render_start = time.monotonic()
             frame_ui = renderer.render(state)
-            cv2.imshow(calibration_window_name, frame_ui)
+            _blit_frame_to_screen(screen, frame_ui)
             profile_stats["render_time"].append(time.monotonic() - render_start)
             
-            # フレームレート制限: 60fpsに制限
-            current_render_time = time.monotonic()
-            elapsed_since_last_render = current_render_time - last_render_time
-            wait_time_ms = max(1, int((frame_interval - elapsed_since_last_render) * 1000))
-            
-            waitkey_start = time.monotonic()
-            key = cv2.waitKey(wait_time_ms) & 0xFF
-            profile_stats["waitkey_time"].append(time.monotonic() - waitkey_start)
-            
-            last_render_time = time.monotonic()
-            
             profile_stats["total_loop_time"].append(time.monotonic() - loop_start)
+            clock.tick(240)
             
             # 定期的に統計情報を表示
             current_time = time.monotonic()
@@ -1010,10 +1061,6 @@ def _run_calibration_loop(
                     max_render = max(profile_stats["render_time"]) * 1000
                     print(f"  レンダリング: avg={avg_render:.2f}ms, max={max_render:.2f}ms", file=sys.stderr)
                 
-                if profile_stats["waitkey_time"]:
-                    avg_waitkey = sum(profile_stats["waitkey_time"]) / len(profile_stats["waitkey_time"]) * 1000
-                    print(f"  waitKey: avg={avg_waitkey:.2f}ms", file=sys.stderr)
-                
                 if profile_stats["total_loop_time"]:
                     avg_loop = sum(profile_stats["total_loop_time"]) / len(profile_stats["total_loop_time"]) * 1000
                     max_loop = max(profile_stats["total_loop_time"]) * 1000
@@ -1031,14 +1078,6 @@ def _run_calibration_loop(
                     session.write_stats = {"count": 0, "total_time": 0.0, "max_time": 0.0, "queue_empty": 0}
                 last_profile_time = current_time
 
-            if key == ord(stop_key) or key == 27:
-                aborted = True
-                break
-
-            if key in (ord(" "), ord("\r"), ord("\n")):
-                skip_trigger["flag"] = True
-                continue
-
             if state.phase == "finished":
                 break
 
@@ -1053,7 +1092,6 @@ def _run_calibration_loop(
 
 def _finalize_and_collect_results(
     *,
-    calibration_window_name: str,
     all_sessions: list[_CalibrationSession],
     video_paths: list[Path],
     point_records: list[_PointRecord],
@@ -1063,8 +1101,7 @@ def _finalize_and_collect_results(
 ) -> "CalibrationRecordingResult":
     for session in all_sessions:
         _close_session(session)
-    cv2.destroyWindow(calibration_window_name)
-    cv2.waitKey(1)
+    _teardown_calibration_display()
 
     if not frames_captured:
         raise RuntimeError("No frames captured during calibration session.")
@@ -1146,6 +1183,8 @@ def record_calibration_session(
         countdown_duration=countdown_duration,
     )
     renderer = CalibrationRenderer(window_size=window_size, radius=target_radius)
+    if fullscreen and window_position is None:
+        window_position = (0, 0)
 
     chosen_extension: str
     if file_extension:
@@ -1161,44 +1200,24 @@ def record_calibration_session(
         if alignment_save is not None:
             alignment_save_path = Path(alignment_save).expanduser().resolve()
 
-    cv2.namedWindow(calibration_window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(calibration_window_name, *renderer.window_size)
-    if window_position is not None:
-        cv2.moveWindow(
-            calibration_window_name,
-            int(window_position[0]),
-            int(window_position[1]),
+    pygame_screen: Optional[pygame.Surface] = None
+    try:
+        pygame_screen, renderer = _setup_calibration_display(
+            calibration_window_name=calibration_window_name,
+            renderer=renderer,
+            fullscreen=fullscreen,
+            window_position=window_position,
         )
-    if fullscreen:
-        cv2.setWindowProperty(
-            calibration_window_name,
-            cv2.WND_PROP_FULLSCREEN,
-            cv2.WINDOW_FULLSCREEN,
-        )
-        try:
-            _, _, w, h = cv2.getWindowImageRect(calibration_window_name)
-            if w > 0 and h > 0:
-                renderer = CalibrationRenderer(window_size=(w, h), radius=target_radius)
-        except cv2.error:
-            pass
-        blank = np.zeros((renderer.window_size[1], renderer.window_size[0], 3), dtype=np.uint8)
-        cv2.imshow(calibration_window_name, blank)
-        cv2.waitKey(1)
+    except Exception:
+        _teardown_calibration_display()
+        raise
 
-    skip_trigger = {"flag": False}
-
-    def _calibration_mouse_handler(event: int, x: int, y: int, flags: int, param: Optional[int]) -> None:
-        if event == cv2.EVENT_LBUTTONDOWN:
-            skip_trigger["flag"] = True
-
-    cv2.setMouseCallback(calibration_window_name, _calibration_mouse_handler)
-
-    # Prepare default output directory and session timestamp tag
+    # Prepare default output directory and session timestamp tag (YYYYMMDD/HHMMSS)
     base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
-    date_str = time.strftime("%Y%m%d")
-    time_str = time.strftime("%H%M%S")
-    session_dir_name = f"{date_str}/{time_str}"  # YYYYMMDD/HHMMSS
-    output_directory = base_dir / date_str / time_str
+    date_component = time.strftime("%Y%m%d")
+    time_component = time.strftime("%H%M%S")
+    session_dir_name = f"{date_component}/{time_component}"
+    output_directory = base_dir / date_component / time_component
     output_directory.mkdir(parents=True, exist_ok=True)
 
     sessions: List[_CalibrationSession] = []
@@ -1293,8 +1312,7 @@ def record_calibration_session(
     except Exception:
         for session in all_sessions:
             _close_session(session)
-        cv2.destroyWindow(calibration_window_name)
-        cv2.waitKey(1)
+        _teardown_calibration_display()
         raise
 
     # Launch optional alignment UI
@@ -1363,7 +1381,7 @@ def record_calibration_session(
             all_sessions=all_sessions,
             renderer=renderer,
             sequencer=sequencer,
-            calibration_window_name=calibration_window_name,
+            screen=pygame_screen,
             stop_key=stop_key,
             show_preview=show_preview,
             fps=fps,
@@ -1373,7 +1391,7 @@ def record_calibration_session(
         frames_captured = False
         point_records = []
     finally:
-        pass  # _run_calibration_loop内でクリーンアップ済み
+        _teardown_calibration_display()
 
     final_elapsed = time.monotonic() - start_time
     if point_records and point_records[-1].end_time is None:
@@ -1420,9 +1438,14 @@ def record_calibration_session(
     )
 
 
-def _resolve_frame_size(width: Optional[int], height: Optional[int]) -> Optional[Tuple[int, int]]:
+def _resolve_frame_size(
+    width: Optional[int],
+    height: Optional[int],
+    *,
+    default: Optional[Tuple[int, int]] = None,
+) -> Optional[Tuple[int, int]]:
     if width is None and height is None:
-        return None
+        return default
     if width is None or height is None:
         raise ValueError("--frame-width and --frame-height must be provided together")
     if width <= 0 or height <= 0:
@@ -1450,22 +1473,35 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--cameras", nargs="*", type=int, metavar="INDEX", help="Camera indices to use.")
     parser.add_argument("--auto-discover", action="store_true", help="Automatically use all detected cameras when --cameras is omitted.")
     parser.add_argument("--list", action="store_true", help="List available cameras and exit.")
-    parser.add_argument("--frame-width", type=int, help="Force capture width for the cameras.")
-    parser.add_argument("--frame-height", type=int, help="Force capture height for the cameras.")
+    parser.add_argument(
+        "--frame-width",
+        type=int,
+        help="Force capture width for the cameras (default fallback: 1920 unless --native-resolution).",
+    )
+    parser.add_argument(
+        "--frame-height",
+        type=int,
+        help="Force capture height for the cameras (default fallback: 1080 unless --native-resolution).",
+    )
+    parser.add_argument(
+        "--native-resolution",
+        action="store_true",
+        help="Use each camera's native resolution instead of forcing the 1920x1080 fallback.",
+    )
     parser.add_argument("--fps", type=float, default=30.0, help="Recording frame rate (default: 30).")
     parser.add_argument("--codec", default="MJPG", help="FourCC codec for recordings (default: MJPG).")
-    parser.add_argument("--camera-fourcc", help="Attempt to configure cameras to this FOURCC (default: MJPG).")
+    parser.add_argument("--camera-fourcc", default="MJPG", help="Attempt to configure cameras to this FOURCC (default: MJPG).")
     parser.add_argument("--preview-scale", type=float, default=1.0, help="Scale factor applied to camera preview windows when enabled.")
     parser.add_argument("--show-preview", action="store_true", help="Display camera preview windows during calibration.")
     parser.add_argument("--window-prefix", help="Custom label prefix for camera preview windows.")
-    parser.add_argument("--window-width", type=int, default=1280, help="Calibration window width when not fullscreen.")
-    parser.add_argument("--window-height", type=int, default=720, help="Calibration window height when not fullscreen.")
+    parser.add_argument("--window-width", type=int, default=1920, help="Calibration window width when not fullscreen.")
+    parser.add_argument("--window-height", type=int, default=1080, help="Calibration window height when not fullscreen.")
     parser.add_argument("--window-x", type=int, help="Optional X position for the calibration window.")
     parser.add_argument("--window-y", type=int, help="Optional Y position for the calibration window.")
     parser.add_argument("--point-duration", type=float, default=2.0, help="Seconds each calibration point is displayed (default: 2.0).")
     parser.add_argument("--pause-duration", type=float, default=0.6, help="Pause between points in seconds (default: 0.6).")
     parser.add_argument("--countdown-duration", type=float, default=1.5, help="Countdown before the first point (default: 1.5).")
-    parser.add_argument("--target-radius", type=int, default=18, help="Radius of the calibration target in pixels (default: 18).")
+    parser.add_argument("--target-radius", type=int, default=20, help="Radius of the calibration target in pixels (default: 18).")
     parser.add_argument("--windowed", action="store_true", help="Disable fullscreen mode for the calibration window.")
     parser.add_argument("--file-extension", help="Override output file extension (default: .avi when codec is MJPG, otherwise .mp4).")
     parser.add_argument("--stop-key", default="q", help="Keyboard key to stop recording early (default: q).")
@@ -1488,8 +1524,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not (args.output_dir or args.cameras or args.auto_discover):
             return 0
 
+    default_frame_size: Optional[Tuple[int, int]]
+    if args.native_resolution:
+        default_frame_size = None
+    else:
+        default_frame_size = (1920, 1080)
+
     try:
-        frame_size = _resolve_frame_size(args.frame_width, args.frame_height)
+        frame_size = _resolve_frame_size(
+            args.frame_width,
+            args.frame_height,
+            default=default_frame_size,
+        )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

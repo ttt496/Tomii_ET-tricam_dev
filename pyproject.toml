@@ -3,7 +3,7 @@ name = "tomii-et"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "japanize-matplotlib>=1.1.3",
     "matplotlib>=3.10.6",
@@ -12,10 +12,16 @@ dependencies = [
     "pandas>=2.3.2",
     "python-dotenv>=1.0",
     "websockets>=11.0",
-    "torch==2.9.0",
-    "torchvision==0.24.0",
-    "torchaudio==2.9.0",
-    
+    "araya-eye",
+    "torch==2.2.2 ; sys_platform != 'linux'",
+    "torchvision==0.17.2 ; sys_platform != 'linux'",
+    "torchaudio==2.2.2 ; sys_platform != 'linux'",
+    "torch==2.9.0 ; sys_platform == 'linux'",
+    "torchvision==0.24.0 ; sys_platform == 'linux'",
+    "torchaudio==2.9.0 ; sys_platform == 'linux'",
+    "pydantic>=2.12.4",
+    "pygame>=2.6.1",
+    "dotenv>=0.9.9",
 ]
 
 [build-system]
@@ -26,19 +32,26 @@ build-backend = "setuptools.build_meta"
 include = ["recording"]
 
 [tool.uv.sources]
+araya-eye = [
+  { path = "araya_eye", editable = true },
+]
 torch = [
-  # index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 torchvision = [
-  # { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 
-# [[tool.uv.index]]
-# name = "pytorch-cpu"
-# url = "https://download.pytorch.org/whl/cpu"
-# explicit = true
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

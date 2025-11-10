@@ -5,6 +5,17 @@ opencv-python>=4.8.0
 pandas>=2.3.2
 python-dotenv>=1.0
 websockets>=11.0
+araya-eye
+pydantic>=2.12.4
+pygame>=2.6.1
+dotenv>=0.9.9
+
+[:sys_platform != "linux"]
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
+
+[:sys_platform == "linux"]
 torch==2.9.0
 torchvision==0.24.0
 torchaudio==2.9.0
