@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import random
 import sys
 import threading
 import time
@@ -34,29 +35,51 @@ class CalibrationPoint:
 
 
 
-pointset1 = (
-CalibrationPoint("top_left", (0.1, 0.1)),
-    CalibrationPoint("top_center", (0.5, 0.1)),
-    CalibrationPoint("top_right", (0.9, 0.1)),
-    CalibrationPoint("middle_left", (0.1, 0.5)),
-    CalibrationPoint("middle_center", (0.5, 0.5)),
-    CalibrationPoint("middle_right", (0.9, 0.5)),
-    CalibrationPoint("bottom_left", (0.1, 0.9)),
-    CalibrationPoint("bottom_center", (0.5, 0.9)),
-    CalibrationPoint("bottom_right", (0.9, 0.9)),
+# 25個の点を生成 (0.1, 0.3, 0.5, 0.7, 0.9 の組み合わせ)
+_coords = [0.1, 0.3, 0.5, 0.7, 0.9]
+_all_25_points = tuple(
+    CalibrationPoint(f"point_{i}_{j}", (_coords[j], _coords[i]))
+    for i in range(5)
+    for j in range(5)
 )
-#pointset1の間に来るような点の集合を作成
-ponitset2 = (
-    CalibrationPoint("top_left", (0.1, 0.25)),
-    CalibrationPoint("top_center", (0.5, 0.25)),
-    CalibrationPoint("top_right", (0.9, 0.25)),
-    CalibrationPoint("middle_left", (0.1, 0.5)),
-    CalibrationPoint("middle_center", (0.5, 0.5)),
-    CalibrationPoint("middle_right", (0.9, 0.5)),
-    CalibrationPoint("bottom_left", (0.1, 0.8)),
-    CalibrationPoint("bottom_center", (0.5, 0.8)),
-    CalibrationPoint("bottom_right", (0.9, 0.8)),
-)
+
+# 25個の点から3セット、各9個ずつをバランス良く選択（重複可）
+# 各セットが画面全体に均等に分布するように配置
+pointset1 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (0, 0), (0, 2), (0, 4),      # 上段: 左、中央、右
+        (1, 1), (1, 3),              # 中上段: 中左、中右
+        (2, 0), (2, 2), (2, 4),      # 中央段: 左、中央、右
+    ]
+)  # 9個
+
+pointset2 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (0, 1), (0, 3),              # 上段: 中左、中右
+        (1, 0), (1, 2), (1, 4),      # 中上段: 左、中央、右
+        (2, 1), (2, 3),              # 中央段: 中左、中右
+        (3, 0), (3, 2),              # 中下段: 左、中央
+    ]
+)  # 9個
+
+pointset3 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (3, 1), (3, 3), (3, 4),      # 中下段: 中左、中右、右
+        (4, 0), (4, 1), (4, 2), (4, 3), (4, 4),  # 下段: 全て
+        (0, 2),                      # 上段: 中央（重複可）
+    ]
+)  # 9個
+
+# ポイントセットの辞書
+CALIBRATION_POINTSETS = {
+    1: pointset1,
+    2: pointset2,
+    3: pointset3,
+}
+
 DEFAULT_CALIBRATION_POINTS: Tuple[CalibrationPoint, ...] = pointset1
 
 
@@ -526,8 +549,10 @@ def _setup_calibration_window(
 
 def _prepare_output_directory(output_dir: Optional[Path | str]) -> Tuple[Path, str]:
     base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
-    session_dir_name = time.strftime("%Y%m%d-%H%M%S")
-    output_directory = base_dir / session_dir_name
+    date_str = time.strftime("%Y%m%d")
+    time_str = time.strftime("%H%M%S")
+    session_dir_name = f"{date_str}/{time_str}"
+    output_directory = base_dir / date_str / time_str
     output_directory.mkdir(parents=True, exist_ok=True)
     return output_directory, session_dir_name
 
@@ -772,6 +797,7 @@ def _run_calibration_loop(
     calibration_window_name: str,
     stop_key: str,
     show_preview: bool,
+    fps: float = 30.0,
 ) -> Tuple[bool, list[_PointRecord], bool]:
     frames_captured = False
     aborted = False
@@ -790,6 +816,11 @@ def _run_calibration_loop(
     # カメラキャプチャスレッドを開始
     stop_event = _start_camera_threads(sessions)
     
+    # フレームレート制限用の変数（引数で指定されたfpsに制限）
+    target_fps = fps
+    frame_interval = 1.0 / target_fps
+    last_render_time = start_time
+    
     # プロファイリング用の変数
     profile_stats = {
         "loop_iterations": 0,
@@ -801,7 +832,7 @@ def _run_calibration_loop(
         "total_loop_time": [],
     }
     last_profile_time = start_time
-    profile_interval = 2.0  # 2秒ごとに統計を表示
+    profile_interval = 5.0  # 2秒ごとに統計を表示
 
     try:
         while True:
@@ -924,9 +955,16 @@ def _run_calibration_loop(
             cv2.imshow(calibration_window_name, frame_ui)
             profile_stats["render_time"].append(time.monotonic() - render_start)
             
+            # フレームレート制限: 60fpsに制限
+            current_render_time = time.monotonic()
+            elapsed_since_last_render = current_render_time - last_render_time
+            wait_time_ms = max(1, int((frame_interval - elapsed_since_last_render) * 1000))
+            
             waitkey_start = time.monotonic()
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(wait_time_ms) & 0xFF
             profile_stats["waitkey_time"].append(time.monotonic() - waitkey_start)
+            
+            last_render_time = time.monotonic()
             
             profile_stats["total_loop_time"].append(time.monotonic() - loop_start)
             
@@ -1082,8 +1120,8 @@ def record_calibration_session(
     preview_scale: float = 1.0,
     points: Optional[Sequence[CalibrationPoint]] = None,
     window_size: Tuple[int, int] = (1280, 720),
-    point_duration: float = 2.0,
-    pause_duration: float = 0.6,
+    point_duration: float = 2.5,
+    pause_duration: float = 0.7,
     countdown_duration: float = 1.5,
     calibration_window_name: str = "Calibration",
     fullscreen: bool = True,
@@ -1157,8 +1195,10 @@ def record_calibration_session(
 
     # Prepare default output directory and session timestamp tag
     base_dir = Path(output_dir).expanduser().resolve() if output_dir else Path("data").expanduser().resolve()
-    session_dir_name = time.strftime("%Y%m%d-%H%M%S")  # YYYYMMDD-HHMMSS
-    output_directory = base_dir / session_dir_name
+    date_str = time.strftime("%Y%m%d")
+    time_str = time.strftime("%H%M%S")
+    session_dir_name = f"{date_str}/{time_str}"  # YYYYMMDD/HHMMSS
+    output_directory = base_dir / date_str / time_str
     output_directory.mkdir(parents=True, exist_ok=True)
 
     sessions: List[_CalibrationSession] = []
@@ -1166,15 +1206,33 @@ def record_calibration_session(
     video_paths: List[Path] = []
     camera_meta: List[dict] = []
 
+    # frame_sizeが指定されていない場合、最初のカメラの解像度を取得して
+    # その後のカメラにも同じ解像度を設定する
+    resolved_frame_size = frame_size
+    if resolved_frame_size is None and camera_indexes:
+        # 最初のカメラを開いて解像度を取得
+        first_cap_temp = _open_camera(camera_indexes[0], None, fps, camera_fourcc)
+        first_width = int(first_cap_temp.get(cv2.CAP_PROP_FRAME_WIDTH))
+        first_height = int(first_cap_temp.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        first_cap_temp.release()
+        resolved_frame_size = (first_width, first_height)
+        print(f"Frame size not specified; using first camera's resolution: {first_width}x{first_height}")
+
     try:
         for idx in camera_indexes:
-            cap = _open_camera(idx, frame_size, fps, camera_fourcc)
+            # 解決された解像度をすべてのカメラに設定
+            cap = _open_camera(idx, resolved_frame_size, fps, camera_fourcc)
 
             actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             actual_fps_val = cap.get(cv2.CAP_PROP_FPS)
-            # Choose writer FPS: prefer driver-reported if sane, else requested fps
-            writer_fps = float(actual_fps_val) if actual_fps_val and actual_fps_val > 0.1 and actual_fps_val < 240 else float(fps)
+            # Choose writer FPS: use requested fps to match recording rate
+            # Only use actual_fps_val if it's very close to requested fps (within 5%)
+            if actual_fps_val and actual_fps_val > 0.1 and actual_fps_val < 240:
+                fps_diff = abs(actual_fps_val - fps) / fps
+                writer_fps = float(actual_fps_val) if fps_diff < 0.05 else float(fps)
+            else:
+                writer_fps = float(fps)
             try:
                 fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
                 fourcc_str = "".join([chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)])
@@ -1308,6 +1366,7 @@ def record_calibration_session(
             calibration_window_name=calibration_window_name,
             stop_key=stop_key,
             show_preview=show_preview,
+            fps=fps,
         )
     except KeyboardInterrupt:
         aborted = True
@@ -1413,6 +1472,7 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--align", action="store_true", help="Launch an interactive alignment UI before recording.")
     parser.add_argument("--align-snapshot", type=Path, help="Optional path for a stitched snapshot captured from the alignment UI.")
     parser.add_argument("--align-save", type=Path, help="Optional JSON file where alignment coordinates are written.")
+    parser.add_argument("--pointset", type=str, choices=["1", "2", "3", "random"], default="1", help="Calibration point set to use (1, 2, 3, or random). Each set contains 9 points from a 5x5 grid. 'random' selects 9 points randomly (default: 1).")
     return parser.parse_args(argv)
 
 
@@ -1449,6 +1509,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Warning: --window-x and --window-y must be specified together; ignoring position offsets.",
             file=sys.stderr,
         )
+    # 選択されたポイントセットを取得
+    if args.pointset == "random":
+        # 25個の点から9個をランダムに選択
+        selected_pointset = tuple(random.sample(_all_25_points, 9))
+    else:
+        selected_pointset = CALIBRATION_POINTSETS[int(args.pointset)]
+    
     try:
         result = record_calibration_session(
             camera_indices,
@@ -1462,6 +1529,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             preview_scale=args.preview_scale,
             window_size=window_size,
             window_position=window_position,
+            points=selected_pointset,
             point_duration=args.point_duration,
             pause_duration=args.pause_duration,
             countdown_duration=args.countdown_duration,
