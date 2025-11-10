@@ -36,29 +36,51 @@ class CalibrationPoint:
 
 
 
-pointset1 = (
-CalibrationPoint("top_left", (0.1, 0.1)),
-    CalibrationPoint("top_center", (0.5, 0.1)),
-    CalibrationPoint("top_right", (0.9, 0.1)),
-    CalibrationPoint("middle_left", (0.1, 0.5)),
-    CalibrationPoint("middle_center", (0.5, 0.5)),
-    CalibrationPoint("middle_right", (0.9, 0.5)),
-    CalibrationPoint("bottom_left", (0.1, 0.9)),
-    CalibrationPoint("bottom_center", (0.5, 0.9)),
-    CalibrationPoint("bottom_right", (0.9, 0.9)),
+# 25個の点を生成 (0.1, 0.3, 0.5, 0.7, 0.9 の組み合わせ)
+_coords = [0.1, 0.3, 0.5, 0.7, 0.9]
+_all_25_points = tuple(
+    CalibrationPoint(f"point_{i}_{j}", (_coords[j], _coords[i]))
+    for i in range(5)
+    for j in range(5)
 )
-#pointset1の間に来るような点の集合を作成
-ponitset2 = (
-    CalibrationPoint("top_left", (0.1, 0.25)),
-    CalibrationPoint("top_center", (0.5, 0.25)),
-    CalibrationPoint("top_right", (0.9, 0.25)),
-    CalibrationPoint("middle_left", (0.1, 0.5)),
-    CalibrationPoint("middle_center", (0.5, 0.5)),
-    CalibrationPoint("middle_right", (0.9, 0.5)),
-    CalibrationPoint("bottom_left", (0.1, 0.8)),
-    CalibrationPoint("bottom_center", (0.5, 0.8)),
-    CalibrationPoint("bottom_right", (0.9, 0.8)),
-)
+
+# 25個の点から3セット、各9個ずつをバランス良く選択（対照的に配置）
+# 各セットが画面全体に均等に分布するように配置
+pointset1 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (0, 0), (0, 2), (0, 4),      # 上段: 左、中央、右
+        (1, 1), (1, 3),              # 中上段: 中左、中右
+        (2, 0), (2, 2), (2, 4),      # 中央段: 左、中央、右
+    ]
+)  # 9個
+
+pointset2 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (0, 1), (0, 3),              # 上段: 中左、中右
+        (1, 0), (1, 2), (1, 4),      # 中上段: 左、中央、右
+        (2, 1), (2, 3),              # 中央段: 中左、中右
+        (3, 0), (3, 2),              # 中下段: 左、中央
+    ]
+)  # 9個
+
+pointset3 = tuple(
+    _all_25_points[i * 5 + j]
+    for i, j in [
+        (3, 1), (3, 3), (3, 4),      # 中下段: 中左、中右、右
+        (4, 0), (4, 1), (4, 2), (4, 3), (4, 4),  # 下段: 全て
+        (0, 2),                      # 上段: 中央（重複可）
+    ]
+)  # 9個
+
+# ポイントセットの辞書
+CALIBRATION_POINTSETS = {
+    1: pointset1,
+    2: pointset2,
+    3: pointset3,
+}
+
 DEFAULT_CALIBRATION_POINTS: Tuple[CalibrationPoint, ...] = pointset1
 
 
@@ -1460,6 +1482,13 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--align", action="store_true", help="Launch an interactive alignment UI before recording.")
     parser.add_argument("--align-snapshot", type=Path, help="Optional path for a stitched snapshot captured from the alignment UI.")
     parser.add_argument("--align-save", type=Path, help="Optional JSON file where alignment coordinates are written.")
+    parser.add_argument(
+        "--pointset",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Calibration point set to use (1, 2, or 3). Each set contains 9 points from a 5x5 grid (0.1, 0.3, 0.5, 0.7, 0.9). Default: 1.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1506,6 +1535,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Warning: --window-x and --window-y must be specified together; ignoring position offsets.",
             file=sys.stderr,
         )
+    # 選択されたポイントセットを取得
+    selected_pointset = CALIBRATION_POINTSETS[args.pointset]
+    
     try:
         result = record_calibration_session(
             camera_indices,
@@ -1519,6 +1551,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             preview_scale=args.preview_scale,
             window_size=window_size,
             window_position=window_position,
+            points=selected_pointset,
             point_duration=args.point_duration,
             pause_duration=args.pause_duration,
             countdown_duration=args.countdown_duration,
