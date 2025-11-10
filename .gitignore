@@ -5,4 +5,4 @@
 .tmp
 *.lock
 data/*
-recording/__pycache__/*
+recording/__pycache__
