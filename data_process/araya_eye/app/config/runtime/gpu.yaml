@@ -1,0 +1,15 @@
+# @package _global_
+# GPU実行モード - 実行環境のみ上書き
+
+pipeline:
+  face_detector:
+    yolov9_wb25:
+      execution_provider: "cuda"
+  # face_recognizer:
+  #   insightface:
+  #     config:
+  #       execution_provider: "cuda"
+  blink_detector:
+    lstm_base_01_blink_detector:
+      lstm_base_01:
+        device: "cuda"

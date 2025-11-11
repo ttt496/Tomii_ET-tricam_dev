@@ -1,0 +1,10 @@
+# @package pipeline.face_detector
+type: yolov9_wb25
+yolov9_wb25:
+  # model_path: "models/yolov9_wb25/cS/yolov9_s_wholebody25_post_0100_1x3x480x640.onnx"
+  model_path: "models/yolov9_wb25/bT/yolov9_t_wholebody25_post_0100_1x3x480x640.onnx"
+  input_size: [640, 480]
+  object_score_threshold: 0.35
+  attribute_score_threshold: 0.7
+  execution_provider: "cpu"
+  nms_threshold: 0.45

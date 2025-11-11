@@ -1,0 +1,18 @@
+# @package pipeline.face_recognizer
+type: insight_face
+insightface:
+  config:
+    execution_provider: "cpu"
+    model_name: "buffalo_l"
+    det_size: [640, 640]
+    recognition_threshold: 0.6
+  similarity_threshold: 0.6
+  max_persons: 10
+  optimization:
+    enabled: true
+    position_similarity_threshold: 0.8
+    image_similarity_threshold: 0.9
+    skip_interval_seconds: 10.0
+    max_skip_frames: 300
+    position_weight: 0.4
+    image_comparison_method: "mse"

@@ -1,0 +1,123 @@
+hydra:
+  run:
+    dir: app/output/${now:%Y-%m-%d}_${now:%H-%M-%S}_${stream.type}
+  sweep:
+    dir: app/multirun/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    subdir: ${hydra:job.num}
+
+stream:
+  type: video
+  camera:
+    video_id: 0
+  socket:
+    host: "0.0.0.0"
+    port: 8485
+
+pipeline:
+  face_detector:
+    type: yolov9_wb25
+    yolov9_wb25:
+      model_path: "models/yolov9_wb25/dC/yolov9_c_wholebody25_post_0100_1x3x480x640.onnx" #"models/yolov9_wb25/cS/yolov9_s_wholebody25_post_0100_1x3x480x640.onnx"
+      object_score_threshold: 0.35
+      attribute_score_threshold: 0.7
+      execution_provider: "cpu"
+      input_size: [640, 480]
+      nms_threshold: 0.45
+      
+  face_recognizer:
+    type: iou_tracker
+    iou_tracker:
+      iou_threshold: 0.3
+      max_lost_frames: 10
+      min_track_length: 3
+      max_persons: 10
+      confidence_threshold: 0.5
+      id_prefix: "person"
+      stability_frames: 5
+      merge_threshold: 0.7
+    insightface:
+      config:
+        execution_provider: "cpu"
+        model_name: "buffalo_l"
+        det_size: [640, 640]
+        recognition_threshold: 0.6
+      similarity_threshold: 0.6
+      max_persons: 10
+      optimization:
+        enabled: true
+        position_similarity_threshold: 0.8
+        image_similarity_threshold: 0.9
+        skip_interval_seconds: 10.0
+        max_skip_frames: 300
+        position_weight: 0.4
+        image_comparison_method: "mse"
+        
+  blink_detector:
+    type: lstm_base_01
+    lstm_base_01_blink_detector:
+      mp_facemesh:
+        max_num_faces: 3
+        refine_landmarks: true
+        min_detection_confidence: 0.5
+        min_tracking_confidence: 0.5
+      lstm_base_01:
+        model_path: "models/lstm_base_01/best_model.pth"
+        config_path: "models/lstm_base_01/config.yaml"
+        device: "cpu"
+        dropout: 0.3
+        blink_threshold: 0.8
+        person_retention_frames: 10
+
+debug:
+  enabled: false
+  max_frames: null
+  save_video: false
+  show_realtime: false
+  renderer_type: "unified"
+  layout:
+    width: 1800
+    height: 1000
+    original_width_ratio: 0.6
+    original_height_ratio: 0.6
+    expanded_panels:
+      right_panel_width: 500
+      bottom_panel_height: 220
+      matrix_region_width: 280
+      enable_advanced_layout: true
+      enable_conflict_prevention: true
+      auto_layout_adjustment: true
+    surplus_areas:
+      utilization_target: 0.75
+      enable_dynamic_sizing: true
+      region_margin: 5
+      section_padding: 10
+  original:
+    style:
+      face_color: [0, 255, 0]
+      eye_color: [255, 0, 0]
+      text_color: [255, 255, 255]
+      font_scale: 0.7
+    features:
+      show_ear_landmarks: true
+      show_ear_values: true
+  graph:
+    face_thumbnail_size: 80
+    time_series_length: 100
+    enhanced_visualization:
+      enable_enhanced_timeseries: true
+      enable_face_timeline: true
+      enable_similarity_matrix: true
+      ear_threshold_line: 0.25
+      blink_probability_bars: true
+      real_time_statistics: true
+      color_intensity_scaling: true
+      smooth_scrolling: true
+      show_frame_numbers: true
+    data_management:
+      max_history_frames: 100
+      ear_data_retention: 150
+      timeline_retention: 200
+      enable_data_compression: true
+      compression_threshold: 75
+      auto_cleanup_enabled: true
+      inactive_threshold_seconds: 30.0

@@ -1,0 +1,5 @@
+# @package stream
+type: directory
+directory:
+  video_dir: "dataset/images/"
+  skip_paths: null

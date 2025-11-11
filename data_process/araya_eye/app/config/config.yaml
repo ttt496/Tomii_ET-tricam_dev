@@ -1,0 +1,20 @@
+defaults:
+  - _self_
+  - stream: video                 # stream/video.yaml
+  - pipeline/face_detector: yolo           # face_detector/yolo.yaml
+  - pipeline/face_recognizer: iou_tracker  # face_recognizer/iou_tracker.yaml
+  - pipeline/blink_detector: lstm_base_01   # blink_detector/lstm_base_01.yaml
+  - debug: disabled               # debug/disabled.yaml
+  - runtime: cpu                  # runtime/cpu.yaml
+
+pipeline:
+  face_detector: ${pipeline/face_detector}
+  face_recognizer: ${pipeline/face_recognizer}
+  blink_detector: ${pipeline/blink_detector}
+
+hydra:
+  run:
+    dir: app/output/${now:%Y-%m-%d}_${now:%H-%M-%S}_${stream.type}
+  sweep:
+    dir: app/multirun/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    subdir: ${hydra:job.num}

@@ -1,0 +1,7 @@
+# @package stream
+type: images
+images:
+  image_dir: "dataset/images/"
+  sort_method: "natural"  # natural/name/time
+  fps: 30.0
+  skip_paths: null
