@@ -11,7 +11,7 @@ data:
   frame_height: 1080
   val_ratio: 0.15
   test_ratio: 0.15
-  train_sessions: ["20251108/022652", "20251108/023219"]   # 例: ["20251108/023947", "20251109/010203"]
+  train_sessions: ["20251108/022339", "20251108/022652", "20251108/023219"]   # 例: ["20251108/023947", "20251109/010203"]
   val_sessions: ["20251108/023406"]
   test_sessions: ["20251108/023947"]
   image_format: npy  # png | npy
@@ -20,7 +20,7 @@ data:
 
 training:
   batch_size: 16
-  num_workers: 4
+  num_workers: 2
   max_epochs: 20
   grad_clip: 1.0
 
@@ -54,5 +54,5 @@ loss:
 
 wandb:
   project: tri-cam
-  run_name: ""
-  mode: disabled  # online | offline | disabled
+  run_name: "proto"
+  mode: online  # online | offline | disabled

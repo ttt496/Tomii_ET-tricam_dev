@@ -55,7 +55,6 @@ def load_eye_crop_samples(
             session = rec["session"]
             frame_idx = int(rec["frame_index"])
             key = (session, frame_idx)
-            phase = csv_row.get("phase")
 
             group = groups.setdefault(
                 key,
@@ -68,13 +67,13 @@ def load_eye_crop_samples(
                     "valid_phase": True,
                 },
             )
+            csv_row = rec.get("csv_row", {})
+            phase = csv_row.get("phase") if isinstance(csv_row, dict) else None
             if allowed_phases is not None:
                 if phase is None:
                     group["valid_phase"] = False
                 else:
                     group["valid_phase"] = group["valid_phase"] and (phase in allowed_phases)
-
-            csv_row = rec.get("csv_row", {})
             if group["gaze"] is None:
                 try:
                     gaze_x = float(csv_row["norm_x"])
@@ -201,7 +200,7 @@ class TriCamEyeDataset(Dataset):
                 eye_coords[eye_idx, 2] = 1.0
                 continue
             img = self._load_image(record)
-            eye_patches[eye_idx, 0] = torch.from_numpy(img)
+            eye_patches[eye_idx, 0] = torch.tensor(img.tolist(), dtype=torch.float32)
             if record.center:
                 u = float(record.center[0]) / float(self.frame_width)
                 v = float(record.center[1]) / float(self.frame_height)

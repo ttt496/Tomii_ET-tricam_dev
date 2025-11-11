@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     USE_MANUAL_ARGS = True  # Set True for quick testing without CLI arguments.
     if USE_MANUAL_ARGS:
-        SESSION_DIR = Path("/Users/araya/Tomii_ET-tricam_dev/data/20251108/023219")
+        SESSION_DIR = Path("/Users/araya/Tomii_ET-tricam_dev/data/20251108/022339")
         CONFIG = _default_config_path()
         MANIFEST, PROCESSED, SAVED = run_sync_and_extract_eyes(
             session_dir=SESSION_DIR,

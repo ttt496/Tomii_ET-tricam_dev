@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import hydra
+from dotenv import load_dotenv
 import numpy as np
 import torch
 import torch.nn as nn
@@ -198,6 +199,10 @@ def train_one_epoch(
     total_main = 0.0
     total_aux = 0.0
     total_batches = 0
+    dist_accum = 0.0
+    sample_count = 0
+    dist_accum = 0.0
+    sample_count = 0
     for batch in loader:
         eye_patches = batch["eye_patches"].to(device)
         eye_coords = batch["eye_coords"].to(device)
@@ -229,11 +234,16 @@ def train_one_epoch(
         total_main += loss_dict["main"].item()
         total_aux += loss_dict["aux"].item()
         total_batches += 1
+        with torch.no_grad():
+            diff = outputs["gaze"] - gaze
+            dist_accum += torch.sum(torch.sqrt(torch.sum(diff ** 2, dim=-1))).item()
+            sample_count += gaze.size(0)
 
     metrics = {
         "loss": total_loss / max(total_batches, 1),
         "loss_main": total_main / max(total_batches, 1),
         "loss_aux": total_aux / max(total_batches, 1),
+        "gaze_l2": dist_accum / max(sample_count, 1),
     }
     if log:
         log.log({f"train/{k}": v for k, v in metrics.items()}, step=epoch)
@@ -256,6 +266,8 @@ def evaluate(
     total_main = 0.0
     total_aux = 0.0
     total_batches = 0
+    dist_accum = 0.0
+    sample_count = 0
 
     for batch in loader:
         eye_patches = batch["eye_patches"].to(device)
@@ -282,11 +294,15 @@ def evaluate(
         total_main += loss_dict["main"].item()
         total_aux += loss_dict["aux"].item()
         total_batches += 1
+        diff = outputs["gaze"] - gaze
+        dist_accum += torch.sum(torch.sqrt(torch.sum(diff ** 2, dim=-1))).item()
+        sample_count += gaze.size(0)
 
     metrics = {
         "loss": total_loss / max(total_batches, 1),
         "loss_main": total_main / max(total_batches, 1),
         "loss_aux": total_aux / max(total_batches, 1),
+        "gaze_l2": dist_accum / max(sample_count, 1),
     }
     if log:
         log.log({f"{split}/{k}": v for k, v in metrics.items()}, step=epoch)
@@ -295,6 +311,7 @@ def evaluate(
 
 @hydra.main(version_base=None, config_path="config", config_name="train_tri_cam")
 def main(cfg: DictConfig) -> None:
+    load_dotenv()
     print(OmegaConf.to_yaml(cfg))
     set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -348,7 +365,13 @@ def main(cfg: DictConfig) -> None:
             log,
         )
         scheduler.step(val_metrics["loss"])
-        print(f"Epoch {epoch}: train_loss={train_metrics['loss']:.4f} val_loss={val_metrics['loss']:.4f}")
+        print(
+            f"Epoch {epoch}: "
+            f"train_loss={train_metrics['loss']:.4f} "
+            f"train_l2={train_metrics['gaze_l2']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} "
+            f"val_l2={val_metrics['gaze_l2']:.4f}"
+        )
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             best_state = {
@@ -375,6 +398,7 @@ def main(cfg: DictConfig) -> None:
         log,
     )
     print(f"Test metrics: {test_metrics}")
+    print(f"Best val gaze L2: {best_val:.4f}, test gaze L2: {test_metrics.get('gaze_l2', 0.0):.4f}")
 
     if log:
         log.finish()
@@ -382,3 +406,8 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
+def _gaze_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
+    diff = pred - target
+    mse = torch.mean((diff) ** 2).item()
+    l2 = torch.mean(torch.sqrt(torch.sum(diff ** 2, dim=-1))).item()
+    return {"mse": mse, "l2": l2}
