@@ -8,3 +8,7 @@ data/*
 outputs/*
 wandb/*
 recording/__pycache__/*
+.envrc
+=1.16,
+best_model.pth
+
