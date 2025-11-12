@@ -20,7 +20,7 @@ pipeline:
       model_path: "models/yolov9_wb25/dC/yolov9_c_wholebody25_post_0100_1x3x480x640.onnx" #"models/yolov9_wb25/cS/yolov9_s_wholebody25_post_0100_1x3x480x640.onnx"
       object_score_threshold: 0.35
       attribute_score_threshold: 0.7
-      execution_provider: "cpu"
+      execution_provider: "cuda"
       input_size: [640, 480]
       nms_threshold: 0.45
       
@@ -37,7 +37,7 @@ pipeline:
       merge_threshold: 0.7
     insightface:
       config:
-        execution_provider: "cpu"
+        execution_provider: "cuda"
         model_name: "buffalo_l"
         det_size: [640, 640]
         recognition_threshold: 0.6

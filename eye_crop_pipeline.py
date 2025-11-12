@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# CUDA 12.6環境を自動設定（このリポジトリでのみ有効）
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from scripts.setup_cuda_env import setup_cuda_env
+    setup_cuda_env()
+except ImportError:
+    pass  # スクリプトが見つからない場合はスキップ
 
 from data_process.sync_inference import run_sync_and_extract_eyes
 
@@ -71,18 +80,20 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     USE_MANUAL_ARGS = True  # Set True for quick testing without CLI arguments.
     if USE_MANUAL_ARGS:
-        SESSION_DIR = Path("/Users/araya/Tomii_ET-tricam_dev/data/20251108/022339")
-        CONFIG = _default_config_path()
-        MANIFEST, PROCESSED, SAVED = run_sync_and_extract_eyes(
-            session_dir=SESSION_DIR,
-            config_path=CONFIG,
-            tolerance_sec=1.0 / 30.0,
-            output_dir=None,
-            limit_batches=None,
-        )
-        print(
-            f"[manual] Processed {PROCESSED} batches, saved {SAVED} eye crops.\n"
-            f"Metadata written to: {MANIFEST}"
-        )
+        BASE_DIR = Path("C:\\Users\\demo\\Tomii_ET-tricam_dev\\data")
+        SESSION_DIRS = list(BASE_DIR.glob("*/*"))
+        for SESSION_DIR in SESSION_DIRS:
+            CONFIG = _default_config_path()
+            MANIFEST, PROCESSED, SAVED = run_sync_and_extract_eyes(
+                session_dir=SESSION_DIR,
+                config_path=CONFIG,
+                tolerance_sec=1.0 / 30.0,
+                output_dir=None,
+                limit_batches=None,
+            )
+            print(
+                f"[manual] Processed {PROCESSED} batches, saved {SAVED} eye crops.\n"
+                f"Metadata written to: {MANIFEST}"
+            )
     else:
         raise SystemExit(main())
