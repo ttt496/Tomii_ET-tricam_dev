@@ -1,0 +1,5 @@
+# @package stream
+type: video
+video:
+  video_path: dataset/meeting/meeting_10s.mp4
+  max_frames: 50

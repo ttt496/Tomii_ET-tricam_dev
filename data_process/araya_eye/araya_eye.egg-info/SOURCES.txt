@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+araya_eye.egg-info/PKG-INFO
+araya_eye.egg-info/SOURCES.txt
+araya_eye.egg-info/dependency_links.txt
+araya_eye.egg-info/requires.txt
+araya_eye.egg-info/top_level.txt

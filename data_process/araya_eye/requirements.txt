@@ -1,0 +1,15 @@
+pydantic
+hydra-core
+
+numpy
+torch
+opencv-python
+mediapipe
+onnxruntime
+
+pandas
+seaborn
+scikit-learn
+
+tqdm
+insightface

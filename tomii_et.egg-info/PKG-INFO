@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: tomii-et
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: <3.13,>=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: japanize-matplotlib>=1.1.3
+Requires-Dist: matplotlib>=3.10.6
+Requires-Dist: numpy<2.0,>=1.24
+Requires-Dist: opencv-python>=4.8.0
+Requires-Dist: pandas>=2.3.2
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: websockets>=11.0
+Requires-Dist: torch>=2.5.0; sys_platform != "linux"
+Requires-Dist: torchvision>=0.20.0; sys_platform != "linux"
+Requires-Dist: torchaudio>=2.5.0; sys_platform != "linux"
+Requires-Dist: torch==2.9.0; sys_platform == "linux"
+Requires-Dist: torchvision==0.24.0; sys_platform == "linux"
+Requires-Dist: torchaudio==2.9.0; sys_platform == "linux"
+Requires-Dist: pydantic>=2.12.4
+Requires-Dist: pygame>=2.6.1
+Requires-Dist: dotenv>=0.9.9
+Requires-Dist: wandb>=0.22.3
+Requires-Dist: omegaconf>=2.3.0
+Requires-Dist: insightface>=0.7.3
+Requires-Dist: mediapipe>=0.10.21
+Requires-Dist: onnxruntime-gpu<2,>=1.16
+Requires-Dist: hydra-core>=1.3.2
+Requires-Dist: schedulefree>=1.4.1

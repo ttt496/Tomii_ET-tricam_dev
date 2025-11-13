@@ -1,0 +1,15 @@
+# @package _global_
+# CPU実行モード - 実行環境のみ上書き
+
+pipeline:
+  face_detector:
+    yolo:
+      execution_provider: "cpu"
+  # face_recognizer:
+  #   insightface:
+  #     config:
+  #       execution_provider: "cpu"
+  blink_detector:
+    lstm_base_01_blink_detector:
+      lstm_base_01:
+        device: "cpu"

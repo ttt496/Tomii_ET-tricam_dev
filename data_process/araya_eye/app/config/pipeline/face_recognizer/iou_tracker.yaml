@@ -1,0 +1,11 @@
+# @package pipeline.face_recognizer
+type: iou_tracker
+iou_tracker:
+  iou_threshold: 0.5
+  max_lost_frames: 30
+  min_track_length: 3
+  max_persons: 10
+  confidence_threshold: 0.3
+  merge_threshold: 0.5
+  track_length_weight: 0.7
+  distance_penalty_factor: 0.1

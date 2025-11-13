@@ -1,0 +1,4 @@
+# @package stream
+type: camera
+camera:
+  video_id: 0

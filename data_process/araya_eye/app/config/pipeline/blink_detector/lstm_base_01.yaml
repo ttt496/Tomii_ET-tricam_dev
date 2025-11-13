@@ -1,0 +1,15 @@
+# @package pipeline.blink_detector
+type: lstm_base_01
+lstm_base_01_blink_detector:
+  mp_facemesh:
+    max_num_faces: 3
+    refine_landmarks: true
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+  lstm_base_01:
+    model_path: "models/lstm_base_01/best_model.pth"
+    config_path: "models/lstm_base_01/config.yaml"
+    device: "cpu"
+    dropout: 0.3
+    blink_threshold: 0.8
+    person_retention_frames: 10

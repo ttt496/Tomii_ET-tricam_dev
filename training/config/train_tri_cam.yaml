@@ -1,0 +1,108 @@
+defaults:
+  - _self_
+
+seed: 42
+
+data:
+  base_dir: data
+  n_cams: 3
+  camera_ids: [0, 1, 2]
+  frame_width: 1920
+  frame_height: 1080
+  val_ratio: 0.15
+  test_ratio: 0.15
+  train_sessions: 
+    - "20251108/022339"
+    - "20251108/022652"
+    - "20251108/023219"
+    - "20251111/163852"
+    - "20251111/164008"
+    - "20251111/164058"
+    - "20251111/164148"
+    - "20251111/164229"
+    - "20251111/164316"
+    - "20251111/164435"
+    - "20251111/164537"
+    - "20251111/164620"
+    - "20251111/164713"
+    - "20251111/164816"
+    - "20251111/164919"
+    - "20251111/165032"
+    - "20251111/165125"
+    - "20251111/165203"
+    - "20251111/165329"
+    - "20251111/165412"
+    - "20251111/165451"
+    - "20251111/165619"
+    - "20251111/165656"
+    - "20251111/165733"
+    - "20251111/165931"
+    - "20251111/170054"
+    - "20251111/170144"
+    - "20251111/170229"
+    - "20251111/170305"
+    - "20251111/170354"
+    - "20251111/170441"
+    - "20251111/170519"
+    - "20251111/170556"
+    - "20251108/023947"
+    - "20251111/172038"
+  val_sessions: 
+    - "20251108/023406"
+    - "20251111/170640"
+    - "20251111/170720"
+    - "20251111/170802"
+    - "20251111/171826"
+    - "20251111/171923"
+    - "20251111/172002"
+    
+  test_sessions: 
+    - "20251111/172116"
+    - "20251111/172152"
+    - "20251111/172234"
+    - "20251111/172310"
+    - "20251111/172346"
+    - "20251111/172431"
+    - "20251111/172810"
+  image_format: npy  # png | npy
+  split_group: session  # session | day
+  allowed_phases: ["point"]
+
+training:
+  batch_size: 256
+  num_workers: 8
+  max_epochs: 50
+  grad_clip: 1.0
+
+optimizer:
+  name: radamschedulefree  # adamw | radamschedulefree
+  lr: 5.0e-4
+  weight_decay: 1.0e-4
+
+scheduler:
+  type: reduce_on_plateau
+  patience: 3
+  factor: 0.5
+
+model:
+  n_cams: 3
+  eyes_per_cam: 2
+  in_ch: 1
+  patch_h: 40
+  patch_w: 140
+  eye_feat_dim: 96
+  geo_hidden: 192
+  fusion_hidden: 128
+  dropout: 0.1
+  aux_weight: 0.1
+  screen_wh: null
+
+loss:
+  main: mse
+  aux_weight: 0.1
+  huber_delta: 2.0
+
+wandb:
+  project: tri-cam
+  run_name: "proto"
+  mode: online  # online | offline | disabled

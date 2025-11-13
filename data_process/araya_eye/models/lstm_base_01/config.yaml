@@ -1,0 +1,5 @@
+input_size: 2   # left_ear + right_ear
+output_size: 3
+num_layers: 2
+hidden_size: 64
+bidirectional: true

@@ -1,0 +1,24 @@
+{
+    // このリポジトリを開いたときに自動的にCUDA 12.6環境を設定
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    
+    // ターミナル起動時に自動実行するコマンド（PowerShell）
+    "terminal.integrated.profiles.windows": {
+        "PowerShell (CUDA 12.6)": {
+            "source": "PowerShell",
+            "args": [
+                "-NoExit",
+                "-Command",
+                "& '${workspaceFolder}/scripts/activate_cuda126.ps1'"
+            ]
+        }
+    },
+    
+    // デフォルトのターミナルプロファイルを設定（オプション）
+    // "terminal.integrated.defaultProfile.windows": "PowerShell (CUDA 12.6)",
+    
+    // Python実行時の環境変数（補助的）
+    "python.envFile": "${workspaceFolder}/.env"
+}
+

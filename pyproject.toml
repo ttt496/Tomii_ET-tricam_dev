@@ -1,0 +1,62 @@
+[project]
+name = "tomii-et"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "japanize-matplotlib>=1.1.3",
+    "matplotlib>=3.10.6",
+    "numpy>=1.24,<2.0",
+    "opencv-python>=4.8.0",
+    "pandas>=2.3.2",
+    "python-dotenv>=1.0",
+    "websockets>=11.0",
+    "torch>=2.5.0 ; sys_platform != 'linux'",
+    "torchvision>=0.20.0 ; sys_platform != 'linux'",
+    "torchaudio>=2.5.0 ; sys_platform != 'linux'",
+    "torch==2.9.0 ; sys_platform == 'linux'",
+    "torchvision==0.24.0 ; sys_platform == 'linux'",
+    "torchaudio==2.9.0 ; sys_platform == 'linux'",
+    "pydantic>=2.12.4",
+    "pygame>=2.6.1",
+    "dotenv>=0.9.9",
+    "wandb>=0.22.3",
+    "omegaconf>=2.3.0",
+    "insightface>=0.7.3",
+    "mediapipe>=0.10.21",
+    "onnxruntime-gpu>=1.16,<2",
+    "hydra-core>=1.3.2",
+    "schedulefree>=1.4.1",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["recording"]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu124", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-cu124", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+  { index = "pytorch-cu124", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
