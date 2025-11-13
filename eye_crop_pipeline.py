@@ -80,9 +80,10 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     USE_MANUAL_ARGS = True  # Set True for quick testing without CLI arguments.
     if USE_MANUAL_ARGS:
-        BASE_DIR = Path("C:\\Users\\demo\\Tomii_ET-tricam_dev\\data")
+        BASE_DIR = Path("D:/Tomii_ET-tricam_dev/data")
         SESSION_DIRS = list(BASE_DIR.glob("20251113/*"))
         for SESSION_DIR in SESSION_DIRS:
+            print(f"Processing session: {SESSION_DIR}")
             CONFIG = _default_config_path()
             MANIFEST, PROCESSED, SAVED = run_sync_and_extract_eyes(
                 session_dir=SESSION_DIR,
