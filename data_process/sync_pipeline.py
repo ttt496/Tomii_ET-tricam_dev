@@ -121,12 +121,8 @@ def discover_camera_artifacts(session_dir: Path) -> List[CameraArtifacts]:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         for cam in data.get("cameras", []):
             camera_id = int(cam["index"])
-            csv_path = Path(cam["timestamp_csv"]).expanduser()
-            if not csv_path.is_absolute():
-                csv_path = session_dir / csv_path
-            video_path = Path(cam["video_path"]).expanduser()
-            if not video_path.is_absolute():
-                video_path = session_dir / video_path
+            csv_path = _resolve_artifact_path(cam["timestamp_csv"], session_dir)
+            video_path = _resolve_artifact_path(cam["video_path"], session_dir)
             artifacts.append(CameraArtifacts(camera_id, csv_path, video_path))
         return artifacts
 
@@ -147,6 +143,27 @@ def _guess_video_path(session_dir: Path, camera_id: int) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def _resolve_artifact_path(raw_path: str | Path, session_dir: Path) -> Path:
+    """Resolve raw JSON paths by preferring files that live inside the session directory."""
+    raw = Path(raw_path).expanduser()
+    candidates = [raw]
+
+    if raw.is_absolute():
+        candidates.append((session_dir / raw.name).resolve(strict=False))
+    else:
+        candidates.append((session_dir / raw).resolve(strict=False))
+
+    name_candidate = (session_dir / raw.name).resolve(strict=False)
+    candidates.append(name_candidate)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    # Fall back to the session-local filename even if it does not yet exist.
+    return name_candidate
 
 
 def _iter_frames(artifact: CameraArtifacts) -> Iterator[FrameSample]:

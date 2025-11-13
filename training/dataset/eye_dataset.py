@@ -71,6 +71,8 @@ def load_eye_crop_samples(
     
     groups: Dict[Tuple[str, int], Dict[str, object]] = {}
 
+    manifest_dir = jsonl_path.parent.resolve()
+
     with jsonl_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -109,10 +111,10 @@ def load_eye_crop_samples(
 
             eye_side = rec["eye_side"]
             camera_id = int(rec["camera_id"])
-            image_path = Path(base_dir, rec["image_path"]).resolve()
+            image_path = _resolve_record_path(rec["image_path"], base_dir, manifest_dir)
             image_npy_path = rec.get("image_npy_path")
             if image_npy_path:
-                image_npy_path = Path(base_dir, image_npy_path).resolve()
+                image_npy_path = _resolve_record_path(image_npy_path, base_dir, manifest_dir)
 
             center = None
             cx = rec.get("eye_center_x")
@@ -157,6 +159,23 @@ def load_eye_crop_samples(
 
     samples.sort(key=lambda x: (x.session, x.frame_index))
     return samples
+
+
+def _resolve_record_path(raw_path: str, base_dir: Optional[Path], manifest_dir: Path) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+
+    candidates = []
+    if base_dir is not None:
+        candidates.append((base_dir / path).resolve())
+    candidates.append((manifest_dir / path).resolve())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
 
 
 def split_by_session(
