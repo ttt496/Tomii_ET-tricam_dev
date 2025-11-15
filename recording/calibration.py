@@ -44,35 +44,38 @@ _all_25_points = tuple(
     for j in range(5)
 )
 
-# 25個の点から3セット、各9個ずつをバランス良く選択（対照的に配置）
-# 各セットが画面全体に均等に分布するように配置
+# 3種類の対称的なポイントセット（各9点）
+# pointset1: 四隅と中央クロス
 pointset1 = tuple(
     _all_25_points[i * 5 + j]
     for i, j in [
-        (0, 0), (0, 2), (0, 4),      # 上段: 左、中央、右
-        (1, 1), (1, 3),              # 中上段: 中左、中右
-        (2, 0), (2, 2), (2, 4),      # 中央段: 左、中央、右
+        (0, 0), (0, 2), (0, 4),
+        (2, 0), (2, 2), (2, 4),
+        (4, 0), (4, 2), (4, 4),
     ]
-)  # 9個
+)
 
+# pointset2: 辺の中点 + 中央（上下左右で対称）
 pointset2 = tuple(
     _all_25_points[i * 5 + j]
     for i, j in [
-        (0, 1), (0, 3),              # 上段: 中左、中右
-        (1, 0), (1, 2), (1, 4),      # 中上段: 左、中央、右
-        (2, 1), (2, 3),              # 中央段: 中左、中右
-        (3, 0), (3, 2),              # 中下段: 左、中央
+        (0, 1), (0, 3),
+        (1, 0), (1, 4),
+        (2, 2),
+        (3, 0), (3, 4),
+        (4, 1), (4, 3),
     ]
-)  # 9個
+)
 
+# pointset3: 内側の3x3リング
 pointset3 = tuple(
     _all_25_points[i * 5 + j]
     for i, j in [
-        (3, 1), (3, 3), (3, 4),      # 中下段: 中左、中右、右
-        (4, 0), (4, 1), (4, 2), (4, 3), (4, 4),  # 下段: 全て
-        (0, 2),                      # 上段: 中央（重複可）
+        (1, 1), (1, 2), (1, 3),
+        (2, 1), (2, 2), (2, 3),
+        (3, 1), (3, 2), (3, 3),
     ]
-)  # 9個
+)
 
 # ポイントセットの辞書
 CALIBRATION_POINTSETS = {
@@ -696,6 +699,7 @@ def _write_session_meta(
     renderer: "CalibrationRenderer",
     fullscreen: bool,
     window_position: Optional[Tuple[int, int]],
+    window_physical_size: Optional[Tuple[float, float]],
     point_sequence: Sequence["CalibrationPoint"],
     sequencer: "CalibrationSequencer",
     target_radius: int,
@@ -712,6 +716,11 @@ def _write_session_meta(
                 "fullscreen": bool(fullscreen),
                 "size": {"width": int(renderer.window_size[0]), "height": int(renderer.window_size[1])},
                 "position": {"x": int(window_position[0]), "y": int(window_position[1])} if window_position is not None else None,
+                "physical_size_cm": (
+                    {"width": float(window_physical_size[0]), "height": float(window_physical_size[1])}
+                    if window_physical_size is not None
+                    else None
+                ),
             },
             "calibration": {
                 "points": [
@@ -879,7 +888,7 @@ def _run_calibration_loop(
         "total_loop_time": [],
     }
     last_profile_time = start_time
-    profile_interval = 2.0  # 2秒ごとに統計を表示
+    profile_interval = 5.0  # 2秒ごとに統計を表示
 
     try:
         while True:
@@ -1156,6 +1165,7 @@ def record_calibration_session(
     calibration_window_name: str = "Calibration",
     fullscreen: bool = True,
     window_position: Optional[Tuple[int, int]] = None,
+    window_physical_size: Optional[Tuple[float, float]] = None,
     target_radius: int = 18,
     stop_key: str = "q",
     align_before_start: bool = False,
@@ -1322,6 +1332,11 @@ def record_calibration_session(
                 "fullscreen": bool(fullscreen),
                 "size": {"width": int(renderer.window_size[0]), "height": int(renderer.window_size[1])},
                 "position": {"x": int(window_position[0]), "y": int(window_position[1])} if window_position is not None else None,
+                "physical_size_cm": (
+                    {"width": float(window_physical_size[0]), "height": float(window_physical_size[1])}
+                    if window_physical_size is not None
+                    else None
+                ),
             },
             "calibration": {
                 "points": [
@@ -1468,10 +1483,20 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--preview-scale", type=float, default=1.0, help="Scale factor applied to camera preview windows when enabled.")
     parser.add_argument("--show-preview", action="store_true", help="Display camera preview windows during calibration.")
     parser.add_argument("--window-prefix", help="Custom label prefix for camera preview windows.")
-    parser.add_argument("--window-width", type=int, default=1280, help="Calibration window width when not fullscreen.")
-    parser.add_argument("--window-height", type=int, default=720, help="Calibration window height when not fullscreen.")
+    parser.add_argument("--window-width", type=int, default=1920, help="Calibration window width when not fullscreen.")
+    parser.add_argument("--window-height", type=int, default=1080, help="Calibration window height when not fullscreen.")
     parser.add_argument("--window-x", type=int, help="Optional X position for the calibration window.")
     parser.add_argument("--window-y", type=int, help="Optional Y position for the calibration window.")
+    parser.add_argument(
+        "--screen-width-cm",
+        type=float,
+        help="Physical width of the calibration display in centimeters (requires --screen-height-cm).",
+    )
+    parser.add_argument(
+        "--screen-height-cm",
+        type=float,
+        help="Physical height of the calibration display in centimeters (requires --screen-width-cm).",
+    )
     parser.add_argument("--point-duration", type=float, default=2.0, help="Seconds each calibration point is displayed (default: 2.0).")
     parser.add_argument("--pause-duration", type=float, default=0.6, help="Pause between points in seconds (default: 0.6).")
     parser.add_argument("--countdown-duration", type=float, default=1.5, help="Countdown before the first point (default: 1.5).")
@@ -1535,6 +1560,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Warning: --window-x and --window-y must be specified together; ignoring position offsets.",
             file=sys.stderr,
         )
+
+    window_physical_size: Optional[Tuple[float, float]] = None
+    if args.screen_width_cm is not None or args.screen_height_cm is not None:
+        if args.screen_width_cm is None or args.screen_height_cm is None:
+            print("Error: --screen-width-cm and --screen-height-cm must be provided together.", file=sys.stderr)
+            return 2
+        if args.screen_width_cm <= 0 or args.screen_height_cm <= 0:
+            print("Error: screen dimensions in cm must be positive values.", file=sys.stderr)
+            return 2
+        window_physical_size = (float(args.screen_width_cm), float(args.screen_height_cm))
+
     # 選択されたポイントセットを取得
     selected_pointset = CALIBRATION_POINTSETS[args.pointset]
     
@@ -1562,6 +1598,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             alignment_snapshot=args.align_snapshot,
             alignment_save=args.align_save,
             file_extension=args.file_extension,
+            window_physical_size=window_physical_size,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

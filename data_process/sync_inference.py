@@ -65,6 +65,21 @@ class EyeCropRecord:
     eye_center_x: Optional[float] = None
     eye_center_y: Optional[float] = None
     camera_position: Optional[str] = None
+    detected: bool = True
+
+
+@dataclass
+class FaceCropRecord:
+    session: str
+    camera_id: int
+    frame_index: int
+    timestamp: float
+    face_index: int
+    csv_row: Dict[str, str]
+    bbox: Dict[str, object]
+    image_path: str
+    image_npy_path: Optional[str] = None
+    camera_position: Optional[str] = None
 
 
 class FrameProvider:
@@ -437,26 +452,48 @@ def _save_eye_image(
     return png_path, npy_path
 
 
+def _save_face_image(
+    image_root: Path,
+    camera_id: int,
+    frame_index: int,
+    face_index: int,
+    image: ImageArray,
+) -> Tuple[Path, Path]:
+    camera_dir = image_root / f"camera{camera_id:02d}"
+    frame_dir = camera_dir / f"frame_{frame_index:06d}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    base_path = frame_dir / f"face{face_index:02d}"
+    png_path = base_path.with_suffix(".png")
+    if not cv2.imwrite(str(png_path), image):
+        raise RuntimeError(f"Failed to write face crop: {png_path}")
+    npy_path = base_path.with_suffix(".npy")
+    np.save(str(npy_path), image, allow_pickle=False)
+    return png_path, npy_path
+
+
 def _collect_eye_crop_records(
     session_name: str,
     batch: SyncedBatch,
     camera_results: Dict[int, PipelineFrameResult],
     image_root: Path,
     camera_labels: Dict[int, str],
-) -> List[EyeCropRecord]:
+) -> Tuple[List[EyeCropRecord], int]:
     records: List[EyeCropRecord] = []
+    failed = 0
     output_root = image_root.parent
     for cam_id, result in camera_results.items():
         sample = batch.samples[cam_id]
         for face_idx, face_state in enumerate(result.faces):
             details = face_state.eye_details
             if not details:
+                failed += 2
                 continue
             for eye_side, eye_image, eye_bb in (
                 ("left", details.left_eye_image, details.left_eye_bb),
                 ("right", details.right_eye_image, details.right_eye_bb),
             ):
                 if eye_image is None:
+                    failed += 1
                     continue
                 png_path, npy_path = _save_eye_image(
                     image_root, cam_id, sample.frame_index, face_idx, eye_side, eye_image
@@ -470,6 +507,9 @@ def _collect_eye_crop_records(
                     if eye_side == "left"
                     else details.right_eye_center_frame
                 )
+                detected = center is not None and center[0] >= 0.0 and center[1] >= 0.0
+                if not detected:
+                    failed += 1
                 records.append(
                     EyeCropRecord(
                         session=session_name,
@@ -487,8 +527,55 @@ def _collect_eye_crop_records(
                         eye_center_x=center[0] if center else None,
                         eye_center_y=center[1] if center else None,
                         camera_position=camera_labels.get(cam_id),
+                        detected=detected,
                     )
                 )
+    return records, failed
+
+
+def _collect_face_crop_records(
+    session_name: str,
+    batch: SyncedBatch,
+    camera_results: Dict[int, PipelineFrameResult],
+    images: Dict[int, ImageArray],
+    image_root: Path,
+    camera_labels: Dict[int, str],
+) -> List[FaceCropRecord]:
+    records: List[FaceCropRecord] = []
+    output_root = image_root.parent
+    for cam_id, result in camera_results.items():
+        sample = batch.samples[cam_id]
+        frame = images.get(cam_id)
+        if frame is None:
+            continue
+        for face_idx, face_state in enumerate(result.faces):
+            bbox = face_state.bbox
+            x1 = max(0, int(bbox.x))
+            y1 = max(0, int(bbox.y))
+            x2 = min(frame.shape[1], int(bbox.x + bbox.width))
+            y2 = min(frame.shape[0], int(bbox.y + bbox.height))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            face_patch = frame[y1:y2, x1:x2]
+            if face_patch.size == 0:
+                continue
+            png_path, npy_path = _save_face_image(image_root, cam_id, sample.frame_index, face_idx, face_patch)
+            rel_png = _make_relative_path(png_path, output_root)
+            rel_npy = _make_relative_path(npy_path, output_root)
+            records.append(
+                FaceCropRecord(
+                    session=session_name,
+                    camera_id=cam_id,
+                    frame_index=sample.frame_index,
+                    timestamp=sample.timestamp,
+                    face_index=face_idx,
+                    csv_row=sample.csv_row,
+                    bbox=asdict(bbox),
+                    image_path=str(rel_png),
+                    image_npy_path=str(rel_npy),
+                    camera_position=camera_labels.get(cam_id),
+                )
+            )
     return records
 
 
@@ -550,7 +637,7 @@ def run_sync_and_extract_eyes(
     tolerance_sec: float = 1.0 / 30.0,
     output_dir: Optional[Path] = None,
     limit_batches: Optional[int] = None,
-) -> Tuple[Path, int, int]:
+) -> Tuple[Path, int, int, int, int]:
     """Synchronize, run MediaPipe, and persist cropped eye images plus metadata."""
     session_dir = session_dir.expanduser().resolve()
     config_path = config_path.expanduser().resolve()
@@ -561,14 +648,23 @@ def run_sync_and_extract_eyes(
 
     base_output_dir = (output_dir or session_dir).expanduser().resolve()
     image_root = base_output_dir / "eye_images"
+    face_image_root = base_output_dir / "face_images"
     manifest_path = base_output_dir / "eye_crops.jsonl"
+    face_manifest_path = base_output_dir / "face_crops.jsonl"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     session_name = session_dir.name
 
     processed_batches = 0
     saved_images = 0
+    saved_faces = 0
+    failed_eyes = 0
     estimator = CameraPositionEstimator([art.camera_id for art in artifacts])
-    with provider, SyncInferenceEngine(pipeline_config) as engine, manifest_path.open("w", encoding="utf-8") as handle:
+    with (
+        provider,
+        SyncInferenceEngine(pipeline_config) as engine,
+        manifest_path.open("w", encoding="utf-8") as eye_handle,
+        face_manifest_path.open("w", encoding="utf-8") as face_handle,
+    ):
         for batch in batches:
             try:
                 images = {cam_id: provider.get_frame(sample) for cam_id, sample in batch.samples.items()}
@@ -578,12 +674,19 @@ def run_sync_and_extract_eyes(
             inference = engine.process_batch(batch, images)
             estimator.update_from_results(inference.camera_results, images)
             camera_labels = estimator.camera_labels()
-            records = _collect_eye_crop_records(session_name, batch, inference.camera_results, image_root, camera_labels)
+            records, failed = _collect_eye_crop_records(session_name, batch, inference.camera_results, image_root, camera_labels)
+            face_records = _collect_face_crop_records(
+                session_name, batch, inference.camera_results, images, face_image_root, camera_labels
+            )
             for record in records:
-                handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+                eye_handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+            for face_record in face_records:
+                face_handle.write(json.dumps(asdict(face_record), ensure_ascii=False) + "\n")
             processed_batches += 1
             saved_images += len(records)
+            saved_faces += len(face_records)
+            failed_eyes += failed
             if limit_batches and processed_batches >= limit_batches:
                 break
 
-    return manifest_path, processed_batches, saved_images
+    return manifest_path, processed_batches, saved_images, saved_faces, failed_eyes

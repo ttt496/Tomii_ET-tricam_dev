@@ -195,18 +195,26 @@ class TriCamNet(nn.Module):
         assert n2 == self.n_eyes, f"2*n_cams={self.n_eyes} に一致していません"
         assert eye_coords.shape[:2] == (B, self.n_eyes)
 
-        # ---- 画像分岐 ----
+        # mark missing eyes (u=v=-1)
+        invalid = (eye_coords[..., :2] < -0.5).all(dim=-1)
         patches = eye_patches.reshape(B * self.n_eyes, C, H, W)
-        feats, qs = self.eye_enc(patches)               # feats: (B*E, F), qs: (B*E, 1)
-        feats = feats.view(B, self.n_eyes, -1)          # (B,E,F)
-        qs = qs.view(B, self.n_eyes)                    # (B,E)
+        feats, qs = self.eye_enc(patches)
+        feats = feats.view(B, self.n_eyes, -1)
+        qs = qs.view(B, self.n_eyes)
+
+        # mask missing eyes before attention and zero their features
+        feats = torch.where(
+            invalid.unsqueeze(-1),
+            torch.zeros_like(feats),
+            feats,
+        )
 
         # 欠損をsoftmax前に強制マスク
         miss = (eye_coords[..., 2] > 0.5)               # (B,E) True=欠損
-        qs_masked = qs.masked_fill(miss, -1e9)
+        qs_masked = qs.masked_fill(miss | invalid, -1e9)
 
         # softmax（全欠損フォールバック: 一様重み）
-        attn = F.softmax(qs_masked, dim=1)              # (B,E)
+        attn = F.softmax(qs_masked, dim=1)
         all_missing = (miss.sum(dim=1) == self.n_eyes)  # (B,)
         if all_missing.any():
             uniform = torch.full_like(attn, 1.0 / self.n_eyes)

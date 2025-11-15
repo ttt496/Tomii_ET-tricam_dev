@@ -3,9 +3,11 @@ pyproject.toml
 recording/__init__.py
 recording/align.py
 recording/calibration.py
+recording/calibration2.py
 recording/capture.py
 recording/check_camera_fourrcc.py
 recording/eye_tracking.py
+recording/ffmpeg_probe.py
 recording/file_style_transfer.py
 recording/obs_tools.py
 recording/visualize.py

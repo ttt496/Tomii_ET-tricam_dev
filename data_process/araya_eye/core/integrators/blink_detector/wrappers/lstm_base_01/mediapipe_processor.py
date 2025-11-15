@@ -63,6 +63,15 @@ def process_mediapipe(
         left_center = _eye_center_in_frame(left_eye_bb, (x1, y1), face_image.shape[1], face_image.shape[0])
         right_center = _eye_center_in_frame(right_eye_bb, (x1, y1), face_image.shape[1], face_image.shape[0])
 
+        if left_eye_image is None:
+            left_eye_image = _blank_eye_image(face_image)
+        if right_eye_image is None:
+            right_eye_image = _blank_eye_image(face_image)
+        if left_center is None:
+            left_center = (-1.0, -1.0)
+        if right_center is None:
+            right_center = (-1.0, -1.0)
+
         ear_results.append(
             EARBlinkDetails(
                 person_id=person_id,
@@ -119,6 +128,13 @@ def _crop_eye_image(
         interpolation=cv2.INTER_AREA,
     )
     return resized
+
+
+def _blank_eye_image(face_image: ImageArray) -> ImageArray:
+    if face_image.ndim == 2:
+        return np.zeros((EYE_CROP_HEIGHT, EYE_CROP_WIDTH), dtype=face_image.dtype)
+    channels = face_image.shape[2]
+    return np.zeros((EYE_CROP_HEIGHT, EYE_CROP_WIDTH, channels), dtype=face_image.dtype)
 
 
 def _eye_center_in_frame(

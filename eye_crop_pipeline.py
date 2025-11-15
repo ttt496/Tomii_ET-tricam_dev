@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    manifest_path, processed_batches, saved_images = run_sync_and_extract_eyes(
+    manifest_path, processed_batches, saved_eye_images, saved_face_images, failed_eyes = run_sync_and_extract_eyes(
         session_dir=args.session_dir,
         config_path=args.config,
         tolerance_sec=args.tolerance,
@@ -71,20 +71,36 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print(
-        f"Processed {processed_batches} batches, saved {saved_images} eye crops.\n"
+        f"Processed {processed_batches} batches, saved {saved_eye_images} eye crops and {saved_face_images} face crops.\n"
+        f"Eye detection failures: {failed_eyes}\n"
         f"Metadata written to: {manifest_path}"
     )
     return 0
 
 
+def _is_time_dir(path: Path) -> bool:
+    name = path.name
+    if not path.is_dir():
+        return False
+    if name.startswith("."):
+        return False
+    return len(name) == 6 and name.isdigit()
+
+
 if __name__ == "__main__":
     USE_MANUAL_ARGS = True  # Set True for quick testing without CLI arguments.
     if USE_MANUAL_ARGS:
-        BASE_DIR = Path("C:\\Users\\demo\\Tomii_ET-tricam_dev\\data")
-        SESSION_DIRS = list(BASE_DIR.glob("*/*"))
+        BASE_DIR = Path("data")
+        SESSION_DIRS = [
+            p
+            for p in BASE_DIR.glob("20251108/*")
+            if _is_time_dir(p)
+        ]
+        print(f"Session directories found:{SESSION_DIRS}")
         for SESSION_DIR in SESSION_DIRS:
+            print(f"\nProcessing session: {SESSION_DIR}")
             CONFIG = _default_config_path()
-            MANIFEST, PROCESSED, SAVED = run_sync_and_extract_eyes(
+            MANIFEST, PROCESSED, SAVED_EYES, SAVED_FACES, FAILED = run_sync_and_extract_eyes(
                 session_dir=SESSION_DIR,
                 config_path=CONFIG,
                 tolerance_sec=1.0 / 30.0,
@@ -92,7 +108,8 @@ if __name__ == "__main__":
                 limit_batches=None,
             )
             print(
-                f"[manual] Processed {PROCESSED} batches, saved {SAVED} eye crops.\n"
+                f"[manual] Processed {PROCESSED} batches, saved {SAVED_EYES} eye crops and {SAVED_FACES} face crops.\n"
+                f"           Eye detection failures: {FAILED}\n"
                 f"Metadata written to: {MANIFEST}"
             )
     else:
